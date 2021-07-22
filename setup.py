@@ -23,7 +23,8 @@ if "install_jigsaw" not in sys.argv:
         if "install" in sys.argv:
             libsaw = PYENV_PREFIX / 'lib' / SYSLIB[platform.system()]
             if not libsaw.is_file():
-                subprocess.check_call(["python", "setup.py", "install_jigsaw"])
+                subprocess.check_call(
+                    [sys.executable, "setup.py", "install_jigsaw"])
 
 
 class InstallJigsawCommand(distutils.cmd.Command):
@@ -43,6 +44,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
              "--init", "submodules/jigsaw-python"])
         # install jigsawpy
         os.chdir(PARENT / 'submodules/jigsaw-python')
+        subprocess.check_call(["git", "checkout", "master"])
         self.announce('INSTALLING JIGSAWPY', level=3)
         subprocess.check_call(["python", "setup.py", "install"])
         # install jigsaw
@@ -93,18 +95,18 @@ setuptools.setup(
     long_description=meta['long_description'],
     long_description_content_type="text/markdown",
     url=meta['url'],
-    packages=setuptools.find_packages(),
+    packages=setuptools.find_packages(exclude=['tests', 'examples', 'docs']),
     cmdclass={
         'install_jigsaw': InstallJigsawCommand,
         },
-    python_requires='>=3.6',
+    python_requires='>=3.6, <=3.8',
     setup_requires=['wheel', 'numpy'],
     install_requires=[
                       "jigsawpy",
                       "matplotlib",
                       "netCDF4",
                       "scipy",
-                      "pyproj>=2.6",
+                      "pyproj>=3.0",
                       "fiona",
                       "rasterio",
                       'tqdm',
@@ -114,11 +116,13 @@ setuptools.setup(
                       "shapely",
                       "geoalchemy2",
                       "utm",
+                      "geopandas",
+                      "pyyaml",
                       ],
     entry_points={
         'console_scripts': [
             "geomesh=geomesh.__main__:main",
-            "interp=geomesh.interp:main"
+            # "interp=geomesh.interp:main"
         ]
     },
     tests_require=['nose'],
