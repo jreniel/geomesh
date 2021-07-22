@@ -1,13 +1,13 @@
 import pathlib
 from importlib import util
-import tempfile
+# import tempfile
 import os
 import sys
 import platform
 
 
 try:
-    import jigsawpy  # noqa: F401
+    import jigsawpy  # type: ignore[import]  # noqa: F401
 except OSError as e:
     pkg = util.find_spec("jigsawpy")
     libjigsaw = {
@@ -15,7 +15,7 @@ except OSError as e:
             "Linux": "libjigsaw.so",
             "Darwin": "libjigsaw.dylib"
             }[platform.system()]
-    tgt_libpath = pathlib.Path(pkg.origin).parent / "_lib" / libjigsaw
+    tgt_libpath = pathlib.Path(pkg.origin).parent / "_lib" / libjigsaw  # type: ignore[union-attr]
     pyenv = pathlib.Path("/".join(sys.executable.split('/')[:-2]))
     src_libpath = pyenv / 'lib' / libjigsaw
     if not src_libpath.is_file():
@@ -31,11 +31,11 @@ from .driver import JigsawDriver
 from .mesh import Mesh
 
 if util.find_spec("colored_traceback") is not None:
-    import colored_traceback
+    import colored_traceback  # type: ignore[import]
     colored_traceback.add_hook(always=True)
 
-tmpdir = str(pathlib.Path(tempfile.gettempdir()+'/geomesh'))+'/'
-os.makedirs(tmpdir, exist_ok=True)
+# tmpdir = str(pathlib.Path(tempfile.gettempdir()+'/geomesh'))+'/'
+# os.makedirs(tmpdir, exist_ok=True)
 
 __all__ = [
     "Geom",
