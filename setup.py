@@ -10,6 +10,7 @@ from multiprocessing import cpu_count
 from pathlib import Path
 import sys
 import os
+import tempfile
 
 PARENT = Path(__file__).parent.absolute()
 PYENV_PREFIX = Path("/".join(sys.executable.split('/')[:-2]))
@@ -38,16 +39,16 @@ class InstallJigsawCommand(distutils.cmd.Command):
 
     def run(self):
         self.announce('Loading JIGSAWPY from GitHub', level=3)
-        # init jigsaw-python submodule
+        tmpdir = tempfile.TemporaryDirectory()
         subprocess.check_call(
-            ["git", "submodule", "update",
-             "--init", "submodules/jigsaw-python"])
-        # install jigsawpy
-        os.chdir(PARENT / 'submodules/jigsaw-python')
-        subprocess.check_call(["git", "checkout", "master"])
+            ["git", "clone", "https://github.com/dengwirda/jigsaw-python",
+             f'{tmpdir.name}/jigsaw-python'])
+        # install jigsawpy first
+        cwd = os.getcwd()
+        os.chdir(f'{tmpdir.name}/jigsaw-python')
         self.announce('INSTALLING JIGSAWPY', level=3)
         subprocess.check_call(["python", "setup.py", "install"])
-        # install jigsaw
+        # then install jigsaw
         self.announce(
             'INSTALLING JIGSAW LIBRARY AND BINARIES FROM '
             'https://github.com/dengwirda/jigsaw-python', level=3)
@@ -67,9 +68,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
         os.makedirs(libsaw_prefix, exist_ok=True)
         envlib = PYENV_PREFIX / 'lib' / SYSLIB[platform.system()]
         os.symlink(envlib, libsaw_prefix / envlib.name)
-        os.chdir(PARENT)
-        subprocess.check_call(
-          ["git", "submodule", "deinit", "-f", "submodules/jigsaw-python"])
+        os.chdir(cwd)
 
     def _check_gcc_version(self):
         cpp = shutil.which("c++")
