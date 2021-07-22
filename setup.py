@@ -117,6 +117,7 @@ setuptools.setup(
                       "utm",
                       "geopandas",
                       "pyyaml",
+                      'appdirs',
                       ],
     entry_points={
         'console_scripts': [
