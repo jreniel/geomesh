@@ -116,18 +116,18 @@ def multipolygon_to_jigsaw_msh_t(
                 [(e0+len(edge2), e1+len(edge2))
                     for e0, e1 in _edge2])
     # geom
-    mesh_t = jigsaw_msh_t()
-    mesh_t.ndims = +2
-    mesh_t.mshID = 'euclidean-mesh'
+    msh_t = jigsaw_msh_t()
+    msh_t.ndims = +2
+    msh_t.mshID = 'euclidean-mesh'
     # TODO: Consider ellipsoidal case.
-    # mesh_t.mshID = 'euclidean-mesh' if self._ellipsoid is None \
+    # msh_t.mshID = 'euclidean-mesh' if self._ellipsoid is None \
     #     else 'ellipsoidal-mesh'
-    mesh_t.vert2 = np.asarray(vert2, dtype=jigsaw_msh_t.VERT2_t)
-    mesh_t.edge2 = np.asarray(
+    msh_t.vert2 = np.asarray(vert2, dtype=jigsaw_msh_t.VERT2_t)
+    msh_t.edge2 = np.asarray(
         [((e0, e1), 0) for e0, e1 in edge2],
         dtype=jigsaw_msh_t.EDGE2_t)
-    mesh_t.crs = src_crs
+    msh_t.crs = src_crs
     if src_crs is not None and dst_crs is not None:
         if not src_crs.equals(dst_crs):
             raise NotImplementedError('transform msh_t with utils')
-    return mesh_t
+    return msh_t
