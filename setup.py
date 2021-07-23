@@ -55,7 +55,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
         # os.chdir("external/jigsaw")
         os.makedirs("build", exist_ok=True)
         os.chdir("build")
-        gcc, cpp = self._check_gcc_version()
+        gcc, cpp = self.get_gcc_version()
         subprocess.check_call(
             ["cmake", "..",
              "-DCMAKE_BUILD_TYPE=Release",
@@ -70,7 +70,11 @@ class InstallJigsawCommand(distutils.cmd.Command):
         os.symlink(envlib, libsaw_prefix / envlib.name)
         os.chdir(cwd)
 
-    def _check_gcc_version(self):
+    @staticmethod
+    def get_gcc_version():
+        """
+        return: major, minor, patch
+        """
         cpp = shutil.which("c++")
         major, minor, patch = subprocess.check_output(
             [cpp, "--version"]
@@ -99,9 +103,9 @@ setuptools.setup(
         'install_jigsaw': InstallJigsawCommand,
         },
     python_requires='>=3.7',
-    setup_requires=['wheel', 'numpy'],
+    # setup_requires=['wheel', 'numpy'],
     install_requires=[
-                      "jigsawpy @ git+https://github.com/dengwrida/jigsaw-python@master",
+                      "jigsawpy @ git+https://github.com/dengwirda/jigsaw-python@master",
                       "matplotlib",
                       "netCDF4",
                       "scipy",
@@ -120,19 +124,24 @@ setuptools.setup(
                       'appdirs',
                       ],
     extras_require={
-        'testing': [
-            'pytest',
-            'pytest-cov',
-            'pytest-mock',
-            'pytest-socket',
-            'pytest-xdist',
-        ],
+        'doc': [
+            'sphinx',
+            'sphinx_autodoc_typehints',
+            'sphinx_rtd_theme',
+            'nbsphinx',
+
+        ]
     },
     entry_points={
         'console_scripts': [
             "geomesh=geomesh.__main__:main",
         ]
     },
-    tests_require=['nose'],
-    test_suite='nose.collector',
+    tests_require=[ 
+            'pytest',
+            'pytest-cov',
+            'pytest-mock',
+            'pytest-socket',
+            'pytest-xdist',
+        ],
 )
