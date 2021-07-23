@@ -98,7 +98,7 @@ setuptools.setup(
     cmdclass={
         'install_jigsaw': InstallJigsawCommand,
         },
-    python_requires='>=3.6, <=3.8',
+    python_requires='>=3.6',
     setup_requires=['wheel', 'numpy'],
     install_requires=[
                       "jigsawpy",
@@ -119,10 +119,18 @@ setuptools.setup(
                       "pyyaml",
                       'appdirs',
                       ],
+    extras_require={
+        'testing': [
+            'pytest',
+            'pytest-cov',
+            'pytest-mock',
+            'pytest-socket',
+            'pytest-xdist',
+        ],
+    },
     entry_points={
         'console_scripts': [
             "geomesh=geomesh.__main__:main",
-            # "interp=geomesh.interp:main"
         ]
     },
     tests_require=['nose'],
