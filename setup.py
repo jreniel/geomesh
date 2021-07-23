@@ -38,21 +38,21 @@ class InstallJigsawCommand(distutils.cmd.Command):
     def finalize_options(self): pass
 
     def run(self):
-        self.announce('Loading JIGSAWPY from GitHub', level=3)
+        self.announce('Loading JIGSAW from GitHub', level=3)
         tmpdir = tempfile.TemporaryDirectory()
         subprocess.check_call(
-            ["git", "clone", "https://github.com/dengwirda/jigsaw-python",
-             f'{tmpdir.name}/jigsaw-python'])
+            ["git", "clone", "https://github.com/dengwirda/jigsaw",
+             f'{tmpdir.name}/jigsaw'])
         # install jigsawpy first
         cwd = os.getcwd()
-        os.chdir(f'{tmpdir.name}/jigsaw-python')
-        self.announce('INSTALLING JIGSAWPY', level=3)
-        subprocess.check_call(["python", "setup.py", "install"])
+        os.chdir(f'{tmpdir.name}/jigsaw')
+        self.announce('INSTALLING JIGSAW', level=3)
+        # subprocess.check_call(["python", "setup.py", "install"])
         # then install jigsaw
         self.announce(
             'INSTALLING JIGSAW LIBRARY AND BINARIES FROM '
-            'https://github.com/dengwirda/jigsaw-python', level=3)
-        os.chdir("external/jigsaw")
+            'https://github.com/dengwirda/jigsaw', level=3)
+        # os.chdir("external/jigsaw")
         os.makedirs("build", exist_ok=True)
         os.chdir("build")
         gcc, cpp = self._check_gcc_version()
@@ -98,10 +98,10 @@ setuptools.setup(
     cmdclass={
         'install_jigsaw': InstallJigsawCommand,
         },
-    python_requires='>=3.6',
+    python_requires='>=3.7',
     setup_requires=['wheel', 'numpy'],
     install_requires=[
-                      "jigsawpy",
+                      "jigsawpy @ git+https://github.com/dengwrida/jigsaw-python@master",
                       "matplotlib",
                       "netCDF4",
                       "scipy",
