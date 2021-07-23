@@ -33,7 +33,12 @@ def get_topobathy_kwargs(values, vmin, vmax, colors=256):
             )
     else:
         norm = None
-    return cmap, norm, levels, col_val
+    return {'cmap': cmap,
+            'norm': norm,
+            'levels': levels,
+            'col_val': col_val,
+            # 'extend': 'both'
+            }
 
 
 def get_axes(axes, figsize=None, subplot=111):

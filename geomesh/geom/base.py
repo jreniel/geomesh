@@ -5,10 +5,12 @@ from typing import List, Tuple, Union
 
 from jigsawpy import jigsaw_msh_t
 import numpy as np
-from pyproj import CRS, Transformer
+from pyproj import CRS  # , Transformer
 # from shapely import ops
 from shapely.geometry import MultiPolygon
 # import utm
+
+from geomesh import utils
 
 
 logger = logging.getLogger(__name__)
@@ -40,17 +42,17 @@ class BaseGeom(ABC):
         the configured geometry.'''
         return self.get_multipolygon()
 
-    def msh_t(self, dst_crs=None, **kwargs) -> jigsaw_msh_t:
+    def msh_t(self, *args, dst_crs=None, **kwargs) -> jigsaw_msh_t:
         '''Returns a :class:jigsawpy.jigsaw_msh_t object representing the
         geometry constrained by the arguments.'''
         return multipolygon_to_jigsaw_msh_t(
-            self.get_multipolygon(**kwargs),
+            self.get_multipolygon(*args, **kwargs),
             self.crs,
             dst_crs,
         )
 
     @abstractmethod
-    def get_multipolygon(self) -> MultiPolygon:
+    def get_multipolygon(self, *args, **kwargs) -> MultiPolygon:
         '''Returns a :class:shapely.geometry.MultiPolygon object representing
         the geometry constrained by the arguments.'''
         raise NotImplementedError
@@ -92,11 +94,11 @@ def multipolygon_to_jigsaw_msh_t(
         src_crs = CRS.from_user_input(src_crs)
 
     vert2: List[Tuple[Tuple[float, float], int]] = list()
-    for polygon in multipolygon:
+    for polygon in multipolygon.geoms:
         if np.all(
                 np.asarray(
                     polygon.exterior.coords).flatten() == float('inf')):
-            raise NotImplementedError("ellispoidal-mesh")
+            raise NotImplementedError("ellipsoidal-mesh")
         for x, y in polygon.exterior.coords[:-1]:
             vert2.append(((x, y), 0))
         for interior in polygon.interiors:
@@ -105,7 +107,7 @@ def multipolygon_to_jigsaw_msh_t(
 
     # edge2
     edge2: List[Tuple[int, int]] = list()
-    for polygon in multipolygon:
+    for polygon in multipolygon.geoms:
         polygon = [polygon.exterior, *polygon.interiors]
         for linear_ring in polygon:
             _edge2 = list()
@@ -129,5 +131,25 @@ def multipolygon_to_jigsaw_msh_t(
     msh_t.crs = src_crs
     if src_crs is not None and dst_crs is not None:
         if not src_crs.equals(dst_crs):
-            raise NotImplementedError('transform msh_t with utils')
+            utils.reproject(msh_t, dst_crs)
     return msh_t
+
+
+# def geodetic_to_geocentric(ellipsoid, latitude, longitude, height):
+#     """Return geocentric (Cartesian) Coordinates x, y, z corresponding to
+#     the geodetic coordinates given by latitude and longitude (in
+#     degrees) and height above ellipsoid. The ellipsoid must be
+#     specified by a pair (semi-major axis, reciprocal flattening).
+#     https://codereview.stackexchange.com/questions/195933/convert-geodetic-coordinates-to-geocentric-cartesian
+#     """
+#     φ = np.deg2rad(latitude)
+#     λ = np.deg2rad(longitude)
+#     sin_φ = np.sin(φ)
+#     a, rf = ellipsoid           # semi-major axis, reciprocal flattening
+#     e2 = 1 - (1 - 1 / rf) ** 2  # eccentricity squared
+#     n = a / np.sqrt(1 - e2 * sin_φ ** 2)  # prime vertical radius
+#     r = (n + height) * np.cos(φ)   # perpendicular distance from z axis
+#     x = r * np.cos(λ)
+#     y = r * np.sin(λ)
+#     z = (n * (1 - e2) + height) * sin_φ
+#     return x, y, z

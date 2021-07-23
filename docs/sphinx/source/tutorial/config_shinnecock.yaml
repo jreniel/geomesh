@@ -1,0 +1,32 @@
+version: 0
+
+features:
+  - mesh: &mesh https://raw.githubusercontent.com/JaimeCalzadaVIMS/adcircpy/main/tests/data/reference/test_tidal_run_cli/fort.14
+    crs: 'epsg:4326'
+
+rasters:
+  - tile-index: &tile-index https://chs.coast.noaa.gov/htdata/raster2/elevation/NCEI_ninth_Topobathy_2014_8483/tileindex_NCEI_ninth_Topobathy_2014.zip
+    bbox: *mesh
+    clip: *mesh
+
+geom:
+  features:
+    - mesh: *mesh
+  rasters:
+    - tile-index: *tile-index
+      zmax: 15.0
+
+hfun:
+  rasters:
+    - tile-index: *tile-index
+      contours:
+        - level: 0.0
+          expansion_rate: 0.001
+
+outputs:
+  mesh:
+    - name: ShinnecockInletTestCase.2dm
+      crs: 'epsg:4326'
+
+    - name: ShinnecockInletTestCase.msh
+      crs: 'epsg:4326'

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections import UserDict
 from glob import glob
 import hashlib
 import logging
@@ -65,13 +66,15 @@ class YamlComponentParser(ABC):
         raise NotImplementedError("Attribute `key` must be implemented by subclass.")
 
 
-class FeaturesYamlParser(YamlComponentParser):
+class FeaturesYamlParser(YamlComponentParser, UserDict):
     def from_request(self, request: Dict) -> Generator:
         rtype = self.get_request_type(request)
         if rtype == "mesh":
             opts = self.get_opts(request)
-            mesh = Mesh.open(request["mesh"], crs=opts.get("crs", None))
-            request.setdefault("obj", mesh)
+            mesh = request.get("obj")
+            if mesh is None:
+                mesh = Mesh.open(request["mesh"], crs=opts.get("crs", None))
+                request.setdefault("obj", mesh)
             yield mesh
         else:
             raise NotImplementedError(f"Unhandled request type: {rtype}")
@@ -98,13 +101,15 @@ class FeaturesYamlParser(YamlComponentParser):
                     opts.pop(ftype)
         return opts
 
-    def get_bbox_from_opts(
-        self, opts: Dict
+    def get_bbox_from_request(
+        self, request: Dict
     ) -> Union[Tuple[float, float, float, float], None]:
-        logger.info(f'Get bbox from opts: {pformat(opts)}')
+        opts = self.get_opts(request)
+        logger.info(f"Get bbox from request: {request}, opts {opts}")
+        raise NotImplementedError("continue")
         # print(opts)
-        exit()
-        # feat = opts.get("bbox", {})
+        feat = opts.get("bbox", {})
+
         # _bbox = None
         # if isinstance(feat, dict) and len(feat) > 0:
         #     _bbox = (feat["xmin"], feat["ymin"], feat["xmax"], feat["ymax"])
@@ -129,9 +134,9 @@ class FeaturesYamlParser(YamlComponentParser):
         return "features"
 
 
-class RastersYamlParser(YamlComponentParser):
+class RastersYamlParser(YamlComponentParser, UserDict):
     def from_request(self, request: Dict) -> Generator:
-        logger.info(f'Get raster from request: {request}')
+        logger.info(f"Get raster from request: {request}")
         rtype = self.get_request_type(request)
         if rtype == "path":
             logger.info(f'Requested raster is a local path: {request["path"]}')
@@ -186,10 +191,10 @@ class RastersYamlParser(YamlComponentParser):
     def expand_tile_index(self, request: Dict) -> Generator:
         opts = self.get_opts(request)
         if len(opts) > 0:
-            logger.info(f'Options for requested tile index are: {opts}')
+            logger.info(f"Options for requested tile index are: {opts}")
         gdf = gpd.read_file(
             request["tile-index"],
-            bbox=self.yaml.features.get_bbox_from_opts(opts),
+            bbox=self.yaml.features.get_bbox_from_request(request),
         )
         cache = self.get_cache_from_opts(opts)
         for row in gdf.itertuples():
@@ -232,7 +237,7 @@ class RastersYamlParser(YamlComponentParser):
         return "rasters"
 
 
-class GeomYamlParser(YamlComponentParser):
+class GeomYamlParser(YamlComponentParser, UserDict):
     def __call__(self):
         if self.yaml.cache is None:
             raise NotImplementedError("Cache is disabled, what to do?")
@@ -353,6 +358,6 @@ class YamlParser:
     def raw(self):
         if not hasattr(self, "_raw"):
             with open(self.path) as fh:
-                logger.info(f'Loading configuration file: {self.path}')
+                logger.info(f"Loading configuration file: {self.path}")
                 self._raw = yaml.load(fh, Loader=yaml.SafeLoader)
         return self._raw

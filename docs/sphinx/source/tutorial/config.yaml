@@ -1,0 +1,17 @@
+version: 0
+rasters:
+  - path: &s1 /ddnas/db/geodata/GEBCO/*.tif
+    bbox: &bbox
+      xmin: 
+      xmax:
+      ymin:
+      ymax:
+  - tile-index: &s2 https://chs.coast.noaa.gov/htdata/raster2/elevation/NCEI_ninth_Topobathy_2014_8483/tileindex_NCEI_ninth_Topobathy_2014.zip
+    <<: *bbox
+
+geom:
+  rasters:
+    - path: *s1
+      zmax: 0.0
+    - tile-index: *s2
+      zmax: 20.0

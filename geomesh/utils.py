@@ -1,12 +1,21 @@
 from collections import defaultdict
 from itertools import permutations
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.path import Path
-from matplotlib.tri import Triangulation
-from scipy.interpolate import RectBivariateSpline
-from shapely.geometry import Polygon, MultiPolygon
+import logging
+from time import time
+from typing import Dict, Union
+
 from jigsawpy import jigsaw_msh_t
+from matplotlib.path import Path
+import matplotlib.pyplot as plt
+from matplotlib.tri import Triangulation
+import numpy as np
+from pyproj import CRS, Transformer
+from scipy.interpolate import RectBivariateSpline, griddata
+from shapely.geometry import Polygon, MultiPolygon
+
+from geomesh.figures import figure
+
+logger = logging.getLogger(__name__)
 
 
 def mesh_to_tri(mesh):
@@ -45,8 +54,7 @@ def put_edge2(mesh):
         mesh.vert2['coord'][:, 0],
         mesh.vert2['coord'][:, 1],
         mesh.tria3['index'])
-    mesh.edge2 = np.array(
-        [(edge, 0) for edge in tri.edges], dtype=jigsaw_msh_t.EDGE2_t)
+    mesh.edge2 = tri.edges.astype(jigsaw_msh_t.EDGE2_t)
 
 
 def geom_to_multipolygon(mesh):
@@ -438,29 +446,25 @@ def interpolate_hmat(mesh, hmat, method='spline', kx=1, ky=1, **kwargs):
         raise NotImplementedError("Only 'spline' method is available")
 
 
+@figure
 def tricontourf(
     mesh,
-    ax=None,
+    axes=None,
     show=False,
     figsize=None,
     extend='both',
     **kwargs
 ):
-    if ax is None:
-        fig = plt.figure(figsize=figsize)
-        ax = fig.add_subplot(111)
-    ax.tricontourf(
+    axes.tricontourf(
         mesh.vert2['coord'][:, 0],
         mesh.vert2['coord'][:, 1],
         mesh.tria3['index'],
         mesh.value.flatten(),
         **kwargs)
-    if show:
-        plt.gca().axis('scaled')
-        plt.show()
-    return ax
+    return axes
 
 
+@figure
 def triplot(
     mesh,
     axes=None,
@@ -470,9 +474,6 @@ def triplot(
     linewidth=0.07,
     **kwargs
 ):
-    if axes is None:
-        fig = plt.figure(figsize=figsize)
-        axes = fig.add_subplot(111)
     axes.triplot(
         mesh.vert2['coord'][:, 0],
         mesh.vert2['coord'][:, 1],
@@ -480,51 +481,175 @@ def triplot(
         color=color,
         linewidth=linewidth,
         **kwargs)
-    if show:
-        axes.axis('scaled')
-        plt.show()
     return axes
 
 
-def limgrad(mesh, dfdx, imax=100):
-    """
-    See https://github.com/dengwirda/mesh2d/blob/master/hjac-util/limgrad.m
-    for original source code.
-    """
-    tri = mesh_to_tri(mesh)
-    xy = np.vstack([tri.x, tri.y]).T
-    edge = tri.edges
-    dx = np.subtract(xy[edge[:, 0], 0], xy[edge[:, 1], 0])
-    dy = np.subtract(xy[edge[:, 0], 1], xy[edge[:, 1], 1])
-    elen = np.sqrt(dx**2+dy**2)
-    ffun = mesh.value.flatten()
-    aset = np.zeros(ffun.shape)
-    ftol = np.min(ffun) * np.sqrt(np.finfo(float).eps)
-    # precompute neighbor table
-    point_neighbors = defaultdict(set)
-    for simplex in tri.triangles:
-        for i, j in permutations(simplex, 2):
-            point_neighbors[i].add(j)
-    # iterative smoothing
-    for _iter in range(1, imax+1):
-        aidx = np.where(aset == _iter-1)[0]
-        if len(aidx) == 0.:
-            break
-        active_idxs = np.argsort(ffun[aidx])
-        for active_idx in active_idxs:
-            adjacent_edges = point_neighbors[active_idx]
-            for adj_edge in adjacent_edges:
-                if ffun[adj_edge] > ffun[active_idx]:
-                    fun1 = ffun[active_idx] + elen[active_idx] * dfdx
-                    if ffun[adj_edge] > fun1+ftol:
-                        ffun[adj_edge] = fun1
-                        aset[adj_edge] = _iter
-                else:
-                    fun2 = ffun[adj_edge] + elen[active_idx] * dfdx
-                    if ffun[active_idx] > fun2+ftol:
-                        ffun[active_idx] = fun2
-                        aset[active_idx] = _iter
-    if not _iter < imax:
-        msg = f'limgrad() did not converge within {imax} iterations.'
-        raise Exception(msg)
-    return ffun
+def msh_t_to_grd(msh: jigsaw_msh_t) -> Dict:
+
+    src_crs = msh.crs if hasattr(msh, 'crs') else None
+    coords = msh.vert2['coord']
+    if src_crs is not None:
+        EPSG_4326 = CRS.from_epsg(4326)
+        if not src_crs.equals(EPSG_4326):
+            transformer = Transformer.from_crs(
+                src_crs, EPSG_4326, always_xy=True)
+            coords = np.vstack(
+                transformer.transform(coords[:, 0], coords[:, 1])).T
+
+    desc = "EPSG:4326"
+    nodes = {i + 1: [tuple(p.tolist()), v] for i, (p, v) in enumerate(zip(coords, -msh.value))}
+    elements = {i + 1: v + 1 for i, v in enumerate(msh.tria3['index'])}
+    offset = len(elements)
+    elements.update({offset + i + 1: v + 1 for i, v in enumerate(msh.quad4['index'])})
+
+    return {'description': desc,
+            'nodes': nodes,
+            'elements': elements}
+
+
+def grd_to_msh_t(_grd: Dict) -> jigsaw_msh_t:
+
+    msh = jigsaw_msh_t()
+    msh.ndims = +2
+    msh.mshID = 'euclidean-mesh'
+    id_to_index = {node_id: index for index, node_id
+                   in enumerate(_grd['nodes'].keys())}
+    triangles = [list(map(lambda x: id_to_index[x], element)) for element
+                 in _grd['elements'].values() if len(element) == 3]
+    quads = [list(map(lambda x: id_to_index[x], element)) for element
+             in _grd['elements'].values() if len(element) == 4]
+    msh.vert2 = np.array([(coord, 0) for coord, _ in _grd['nodes'].values()],
+                         dtype=jigsaw_msh_t.VERT2_t)
+    msh.tria3 = np.array([(index, 0) for index in triangles],
+                         dtype=jigsaw_msh_t.TRIA3_t)
+    msh.quad4 = np.array([(index, 0) for index in quads],
+                         dtype=jigsaw_msh_t.QUAD4_t)
+    value = [value for _, value in _grd['nodes'].values()]
+    msh.value = np.array(np.array(value).reshape((len(value), 1)),
+                         dtype=jigsaw_msh_t.REALS_t)
+    crs = _grd.get('crs')
+    if crs is not None:
+        msh.crs = CRS.from_user_input(crs)
+    return msh
+
+
+def msh_t_to_2dm(msh: jigsaw_msh_t):
+    coords = msh.vert2['coord']
+    src_crs = msh.crs if hasattr(msh, 'crs') else None
+    if src_crs is not None:
+        EPSG_4326 = CRS.from_epsg(4326)
+        if not src_crs.equals(EPSG_4326):
+            transformer = Transformer.from_crs(
+                src_crs, EPSG_4326, always_xy=True)
+            coords = np.vstack(
+                transformer.transform(coords[:, 0], coords[:, 1])).T
+    return {
+            'ND': {i+1: (coord, msh.value[i, 0] if not
+                         np.isnan(msh.value[i, 0]) else -99999)
+                   for i, coord in enumerate(coords)},
+            'E3T': {i+1: index+1 for i, index
+                    in enumerate(msh.tria3['index'])},
+            'E4Q': {i+1: index+1 for i, index
+                    in enumerate(msh.quad4['index'])}
+        }
+
+
+def sms2dm_to_msh_t(_sms2dm: Dict) -> jigsaw_msh_t:
+    msh = jigsaw_msh_t()
+    msh.ndims = +2
+    msh.mshID = 'euclidean-mesh'
+    id_to_index = {node_id: index for index, node_id
+                   in enumerate(_sms2dm['ND'].keys())}
+    if 'E3T' in _sms2dm:
+        triangles = [list(map(lambda x: id_to_index[x], element)) for element
+                     in _sms2dm['E3T'].values()]
+        msh.tria3 = np.array([(index, 0) for index in triangles],
+                             dtype=jigsaw_msh_t.TRIA3_t)
+    if 'E4Q' in _sms2dm:
+        quads = [list(map(lambda x: id_to_index[x], element)) for element
+                 in _sms2dm['E4Q'].values()]
+        msh.quad4 = np.array([(index, 0) for index in quads],
+                             dtype=jigsaw_msh_t.QUAD4_t)
+    msh.vert2 = np.array([(coord, 0) for coord, _ in _sms2dm['ND'].values()],
+                         dtype=jigsaw_msh_t.VERT2_t)
+    value = [value for _, value in _sms2dm['ND'].values()]
+    msh.value = np.array(np.array(value).reshape((len(value), 1)),
+                         dtype=jigsaw_msh_t.REALS_t)
+    crs = _sms2dm.get('crs')
+    if crs is not None:
+        msh.crs = CRS.from_user_input(crs)
+    return msh
+
+
+def reproject_parallel_worker(coord, src_crs, dst_crs):
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    return transformer.transform(coord[0], coord[1])
+
+
+def reproject(
+        mesh: jigsaw_msh_t,
+        dst_crs: Union[str, CRS],
+        nprocs=None,
+):
+    src_crs = mesh.crs
+    dst_crs = CRS.from_user_input(dst_crs)
+    start = time()
+    logger.debug(f'Begin transforming points from {mesh.crs} to {dst_crs}.')
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    x, y = transformer.transform(
+        mesh.vert2['coord'][:, 0], mesh.vert2['coord'][:, 1])
+    logger.debug(f'Transforming points took {time() - start}.')
+    mesh.vert2['coord'][:] = np.vstack([x, y]).T
+    mesh.crs = dst_crs
+
+
+def interpolate(src: jigsaw_msh_t, dst: jigsaw_msh_t, **kwargs):
+    if src.mshID == 'euclidean-grid' and dst.mshID == 'euclidean-mesh':
+        interpolate_euclidean_grid_to_euclidean_mesh(src, dst, **kwargs)
+    elif src.mshID == 'euclidean-mesh' and dst.mshID == 'euclidean-mesh':
+        interpolate_euclidean_mesh_to_euclidean_mesh(src, dst, **kwargs)
+    else:
+        raise NotImplementedError(
+            f'Not implemented type combination: source={src.mshID}, '
+            f'dest={dst.mshID}')
+
+
+def interpolate_euclidean_mesh_to_euclidean_mesh(
+        src: jigsaw_msh_t,
+        dst: jigsaw_msh_t,
+        method='linear',
+        fill_value=np.nan
+):
+    values = griddata(
+        src.vert2['coord'],
+        src.value.flatten(),
+        dst.vert2['coord'],
+        method=method,
+        fill_value=fill_value
+    )
+    dst.value = np.array(
+        values.reshape(len(values), 1), dtype=jigsaw_msh_t.REALS_t)
+
+
+def interpolate_euclidean_grid_to_euclidean_mesh(
+        src: jigsaw_msh_t,
+        dst: jigsaw_msh_t,
+        bbox=[None, None, None, None],
+        kx=3,
+        ky=3,
+        s=0
+):
+    values = RectBivariateSpline(
+        src.xgrid,
+        src.ygrid,
+        src.value.T,
+        bbox=bbox,
+        kx=kx,
+        ky=ky,
+        s=s
+        ).ev(
+        dst.vert2['coord'][:, 0],
+        dst.vert2['coord'][:, 1])
+    dst.value = np.array(
+        values.reshape((values.size, 1)),
+        dtype=jigsaw_msh_t.REALS_t)
