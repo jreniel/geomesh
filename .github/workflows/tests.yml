@@ -25,7 +25,7 @@ jobs:
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('setup.py') }}
           restore-keys: ${{ runner.os }}-pip-${{ matrix.python-version }}-
       - name: Install dependencies
-        run: pip install -e .[testing]
+        run: pip install -e .[tests]
       - name: Run tests with coverage
         run: pytest --cov=geomesh --numprocesses auto
       - name: Upload coverage to Codecov
