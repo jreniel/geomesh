@@ -7,10 +7,10 @@ jobs:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        os: [ ubuntu-latest ]
-        python-version: [ 3.7, 3.8, 3.9 ]
+        os: [ ubuntu-latest ] # , macos-latest, windows-latest ]
+        python-version: [ 3.9 ] # [ 3.7, 3.8, 3.9 ]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
@@ -25,12 +25,18 @@ jobs:
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('setup.py') }}
           restore-keys: ${{ runner.os }}-pip-${{ matrix.python-version }}-
       - name: Install dependencies
-        run: pip install -e .[tests]
+        run: |
+          pip install wheel
+          pip install setuptools_cythonize
+          pip install .[tests]
+          python setup.py install_jigsaw
+
       - name: Run tests with coverage
-        run: pytest --cov=geomesh --numprocesses auto
+        run: pytest --cov=geomesh --numprocesses auto --cov-report term-missing
       - name: Upload coverage to Codecov
         if: matrix.python-version == 3.9
         uses: codecov/codecov-action@v1
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           flags: python${{ matrix.python-version }}-${{ runner.os }}
           fail_ci_if_error: true
