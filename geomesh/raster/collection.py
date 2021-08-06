@@ -1,0 +1,3 @@
+
+class RasterCollection:
+    pass
