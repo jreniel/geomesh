@@ -4,3 +4,4 @@ dist/
 *.egg-info/
 **/.junk/
 **/.ipynb_checkpoints/
+__pycache__/
