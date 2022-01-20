@@ -4,8 +4,9 @@ from typing import Union
 # from shapely.geometry import MultiPolygon
 
 from geomesh.hfun.base import BaseHfun
-# from geomesh.hfun.mesh import MeshHfun
+from geomesh.hfun.mesh import MeshHfun
 from geomesh.hfun.raster import RasterHfun
+from geomesh.hfun.raster_tile_index import RasterTileIndexHfun
 # from geomesh.mesh import Mesh
 from geomesh.raster import Raster
 # from geomesh.hfun.shapely import PolygonHfun, MultiPolygonHfun
@@ -13,8 +14,9 @@ from geomesh.raster import Raster
 
 class HfunInputType(Enum):
 
-    # Mesh = MeshHfun
+    EuclideanMesh2D = MeshHfun
     Raster = RasterHfun
+    RasterTileIndex = RasterTileIndexHfun
 
     @classmethod
     def _missing_(cls, name):

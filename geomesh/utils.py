@@ -5,8 +5,8 @@ from time import time
 from typing import Dict, Union
 
 from jigsawpy import jigsaw_msh_t
+from matplotlib.collections import PolyCollection
 from matplotlib.path import Path
-import matplotlib.pyplot as plt
 from matplotlib.tri import Triangulation
 import numpy as np
 from pyproj import CRS, Transformer
@@ -481,6 +481,28 @@ def triplot(
         color=color,
         linewidth=linewidth,
         **kwargs)
+    return axes
+
+
+@figure
+def quadface(
+    mesh,
+    axes=None,
+    show=False,
+    figsize=None,
+    extend='both',
+    **kwargs
+):
+    # if len(self.quads) > 0:
+    pc = PolyCollection(
+        mesh.vert2['coord'][mesh.quad4['index']],
+        # facecolor=facecolor,
+        # edgecolor=edgecolor,
+        linewidth=0.07
+    )
+    quad_value = np.mean(mesh.value.flatten()[mesh.quad4['index']], axis=1)
+    pc.set_array(quad_value)
+    axes.add_collection(pc)
     return axes
 
 

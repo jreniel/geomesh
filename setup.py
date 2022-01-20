@@ -207,6 +207,8 @@ setuptools.setup(
         "geopandas",
         "pyyaml",
         "appdirs",
+        "pylas",
+        "lazrs",
     ],
     extras_require={
         "doc": doc_requires,

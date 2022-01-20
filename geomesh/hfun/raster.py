@@ -80,11 +80,6 @@ class RasterHfun(BaseHfun, Raster):
                     "CRS is geographic, transforming points to local projection."
                 )
                 local_azimuthal_projection = f"+proj=aeqd +R=6371000 +units=m +lat_0={(y0 + y1)/2} +lon_0={(x0 + x1)/2}"
-                # geographic_to_local = functools.partial(
-                #     pyproj.transform,
-                #     pyproj.Proj("+proj=longlat +datum=WGS84 +no_defs"),
-                #     pyproj.Proj(local_azimuthal_projection),
-                # )
                 local_crs = CRS.from_user_input(local_azimuthal_projection)
                 transformer = Transformer.from_crs(self.crs, local_crs, always_xy=True)
                 geographic_to_local = transformer.transform

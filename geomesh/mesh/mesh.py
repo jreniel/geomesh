@@ -444,7 +444,7 @@ class EuclideanMesh2D(EuclideanMesh):
             self.tripcolor(axes=axes, **kwargs)
         if elements is True:
             utils.triplot(self.msh_t, axes=axes)
-        # self.quadface(axes=axes, **kwargs)
+        self.quadface(axes=axes, **kwargs)
         axes.axis('scaled')
         if extent is not None:
             axes.axis(extent)
@@ -470,7 +470,10 @@ class EuclideanMesh2D(EuclideanMesh):
         return utils.tricontourf(self.msh_t, **kwargs)
 
     def triplot(self, **kwargs):
-        return utils.triplot(self.msh_t, **kwargs)      
+        return utils.triplot(self.msh_t, **kwargs)
+
+    def quadface(self, **kwargs):
+        return utils.quadface(self.msh_t, **kwargs)      
 
     def interpolate(
         self, raster: Union[Raster, List[Raster]], method="nearest", nprocs=None

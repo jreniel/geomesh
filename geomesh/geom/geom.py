@@ -15,6 +15,7 @@ from geomesh.geom.shapely import PolygonGeom, MultiPolygonGeom
 class GeomInputType(Enum):
 
     Mesh = MeshGeom
+    EuclideanMesh2D = MeshGeom
     MultiPolygon = MultiPolygonGeom
     Polygon = PolygonGeom
     Raster = RasterGeom

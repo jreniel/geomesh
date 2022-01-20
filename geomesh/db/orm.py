@@ -3,8 +3,9 @@ import logging
 import pathlib
 # from typing import List, TYPE_CHECKING
 
+import appdirs
 
-from geoalchemy2 import Geometry, Raster as _Raster
+from geoalchemy2 import Geometry
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.event import listen
 from sqlalchemy.sql import select, func
@@ -62,30 +63,21 @@ class HfunCollection(Base):
     id = Column(String, primary_key=True, nullable=False)
 
 
-# class Raster(Base):
-#     __tablename__ = "raster"
-#     raster = Column(_Raster, nullable=True)
-#     uri = Column(String, nullable=True)
-#     id = Column(String, primary_key=True)
-#     geom = relationship("Geom")
+class Raster(Base):
+    __tablename__ = "raster"
+    id = Column(String, primary_key=True)
+    geometry = Column(
+        Geometry(
+            'POLYGON',
+            management=True,
+            srid=4326
+        ),
+        nullable=False
+    )
+    uri = Column(String, nullable=True)
 
 
-# class TileIndexRasters(Base):
-#     __tablename__ = 'tile_index'
-#     geom = Column(
-#         Geometry(
-#             'POLYGON',
-#             management=True,
-#             srid=4326
-#             ),
-#         nullable=False)
-#     raster = Column(_Raster(srid=4326, spatial_index=False))
-#     url = Column(String, primary_key=True, nullable=False)
-#     name = Column(String, nullable=False)
-#     md5 = Column(String, nullable=False)
-
-
-def spatialite_session(path, echo=False):
+def spatialite_session(path=None, echo=False):
 
     def engine(path, echo=False):
         path = pathlib.Path(path)
@@ -106,17 +98,11 @@ def spatialite_session(path, echo=False):
             GeomCollection.__table__.create(engine)
             Hfun.__table__.create(engine)
             HfunCollection.__table__.create(engine)
-            # Raster.__table__.create(engine)
+            Raster.__table__.create(engine)
 
         return engine
-
+    if path is None:
+        path = pathlib.Path(appdirs.user_cache_dir('geomesh'))
+    else:
+        path = pathlib.Path(path)
     return sessionmaker(bind=engine(path, echo))
-
-
-def postgis_session():
-    raise NotImplementedError
-
-
-def get_session(path, echo=False, dbtype='spatialite'):
-    assert dbtype in ['spatialite']
-    return spatialite_session(path, echo)

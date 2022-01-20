@@ -12,12 +12,10 @@ def test_basic_build(verbosity=0):
 
     url = "https://coast.noaa.gov/htdata/raster2/elevation/NCEI_ninth_Topobathy_2014_8483/northeast_sandy/ncei19_n41x00_w074x00_2015v1.tif"
 
-    raster = Raster(
-        url,
-        # chunk_size=1500
-    )
-    raster.resample(0.125)
+    raster = Raster(url)
     assert isinstance(raster, Raster)
+
+    raster.resample(0.125)
 
     geom = Geom(raster, zmax=15.0)
     assert isinstance(geom, RasterGeom)
@@ -50,7 +48,7 @@ if __name__ == "__main__":
 
     log_level = logging.DEBUG
 
-    from geomesh.raster import logger as raster_logger
+    from geomesh.raster.raster import logger as raster_logger
 
     raster_logger.setLevel(log_level)
 
