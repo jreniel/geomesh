@@ -11,6 +11,7 @@ class BuildCli(CliComponent):
     @staticmethod
     def add_subparser_action(subparsers: argparse._SubParsersAction):
         parser = subparsers.add_parser("build")
+        parser.add_argument("--config")
         add_geom_to_parser(parser)
         add_hfun_to_parser(parser)
 

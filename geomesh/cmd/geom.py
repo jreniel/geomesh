@@ -17,7 +17,12 @@ class GeomCli(CliComponent):
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        print(self.geom)
+        # print(self.geom)
+        if self.geom is None:
+            return
+        # print(self.geom)
+        raise NotImplementedError
+
 
     @property
     def geom(self):

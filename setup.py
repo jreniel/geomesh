@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 import setuptools
 import subprocess
+from importlib import util
 import setuptools.command.build_py
 import distutils.cmd
 import distutils.util
@@ -14,7 +15,7 @@ import os
 import tempfile
 
 import pathlib
-from setuptools_cythonize import get_cmdclass
+
 
 # if pathlib.Path('build').exists():
 #     shutil.rmtree('build')
@@ -31,6 +32,11 @@ if "install_jigsaw" not in sys.argv:
             libsaw = PYENV_PREFIX / "lib" / SYSLIB[platform.system()]
             if not libsaw.is_file():
                 subprocess.check_call([sys.executable, "setup.py", "install_jigsaw"])
+
+if util.find_spec("setuptools_cythonize") is None:
+    subprocess.check_call([sys.executable, "-m", "pip", 'install', 'setuptools-cythonize'])
+
+from setuptools_cythonize import get_cmdclass
 
 
 class InstallJigsawCommand(distutils.cmd.Command):
@@ -218,6 +224,7 @@ setuptools.setup(
     entry_points={
         "console_scripts": [
             "geomesh=geomesh.__main__:main",
+            "geomesh-api=geomesh.api.__main__:main",
         ]
     },
 )

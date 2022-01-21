@@ -101,6 +101,9 @@ class Raster:
         x0, y0, x1, y1 = self.get_window_bounds(window)
         return np.linspace(x0, x1, width)
 
+    def copy(self):
+        return Raster(self._tmpfile)
+
     def get_y(self, window: windows.Window = None) -> np.ndarray:
         """
         Returns linear space over y-coordinate of raster.
@@ -446,6 +449,7 @@ class Raster:
         with rasterio.open(tmpfile.name, "w", **kwargs) as dst:
             dst.write(data)
         self._tmpfile = tmpfile
+        return self
 
     def save(self, path):
         with rasterio.open(pathlib.Path(path), "w", **self.src.meta) as dst:
@@ -462,6 +466,8 @@ class Raster:
 
         if isinstance(geom, Polygon):
             geom = MultiPolygon([geom])
+        # TODO: rasterio warning: py.warnings WARNING: /home/jreniel/thesis/.conda_env/lib/python3.9/site-packages/rasterio/features.py:284: ShapelyDeprecationWarning: Iteration over multi-part geometries is deprecated and will be removed in Shapely 2.0. Use the `geoms` property to access the constituent parts of a multi-part geometry.
+        # for index, item in enumerate(shapes):
         out_image, out_transform = rasterio.mask.mask(self.src, geom, crop=True)
         out_meta = self.src.meta.copy()
         out_meta.update(

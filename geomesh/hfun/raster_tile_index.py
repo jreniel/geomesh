@@ -1,4 +1,4 @@
-# from geomesh.hfun.base import BaseHfun
+from geomesh.hfun.base import BaseHfun
 # from geomesh.hfun.raster import RasterHfun
 # from geomesh.raster import Raster
 
@@ -6,7 +6,8 @@
 # def apply_opts()
 
 
-# class RasterTileIndexHfun(BaseHfun):
+class RasterTileIndexHfun(BaseHfun):
+    pass
 
 #     def __init__(self, tile_index: RasterTileIndex, cache=None):
 #         self._tile_index = tile_index

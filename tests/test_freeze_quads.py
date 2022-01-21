@@ -29,30 +29,5 @@ if __name__ == "__main__":
         force=True,
     )
     logging.captureWarnings(True)
-
-    log_level = logging.DEBUG
-
-    from geomesh.geom.mesh import logger as geom_mesh_logger
-    geom_mesh_logger.setLevel(log_level)
-
-    # from geomesh.raster.raster import logger as raster_logger
-
-    # raster_logger.setLevel(log_level)
-
-    # from geomesh.hfun.raster import logger as hfun_raster_logger
-
-    # hfun_raster_logger.setLevel(log_level)
-
-    # from geomesh.geom.raster import logger as geom_raster_logger
-
-    # geom_raster_logger.setLevel(log_level)
-
-    # from geomesh.utils import logger as utils_logger
-
-    # utils_logger.setLevel(log_level)
-
-    # from geomesh.driver import logger as jigsaw_driver_logger
-
-    # jigsaw_driver_logger.setLevel(log_level)
-
+    logging.getLogger('geomesh').setLevel(logging.DEBUG)
     test_freeze_quads(verbosity=1)
