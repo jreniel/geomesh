@@ -83,7 +83,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
                 "-DCMAKE_BUILD_TYPE=Release",
                 f"-DCMAKE_INSTALL_PREFIX={PYENV_PREFIX}",
                 f"-DCMAKE_C_COMPILER={os.getenv('CC', 'gcc')}",
-                f"-DCMAKE_CXX_COMPILER={os.getenv('CXX', 'cpp')}",
+                f"-DCMAKE_CXX_COMPILER={os.getenv('CXX', 'g++')}",
             ]
         )
         subprocess.check_call(["make", f"-j{cpu_count()}", "install"])
@@ -98,7 +98,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
         """
         return: major, minor, patch
         """
-        cpp = shutil.which(os.getenv("CXX", "cpp"))
+        cpp = shutil.which(os.getenv("CXX", "g++"))
         major, minor, patch = (
             subprocess.check_output([cpp, "--version"])
             .decode("utf-8")
