@@ -81,7 +81,11 @@ def spatialite_session(path=None, echo=False):
 
     def engine(path, echo=False):
         path = pathlib.Path(path)
-        _new_db = not path.is_file()
+        _new_db = False
+        if not path.is_file():
+            path.parent.mkdir(exist_ok=True, parents=True)
+            _new_db = True
+
         engine = create_engine(f'sqlite:///{str(path)}', echo=echo)
 
         def load_spatialite(dbapi_conn, connection_record):
@@ -101,8 +105,11 @@ def spatialite_session(path=None, echo=False):
             Raster.__table__.create(engine)
 
         return engine
+
     if path is None:
-        path = pathlib.Path(appdirs.user_cache_dir('geomesh'))
+        path = pathlib.Path(appdirs.user_cache_dir('geomesh'))  / 'cache.sqlite'
+        
     else:
         path = pathlib.Path(path)
+
     return sessionmaker(bind=engine(path, echo))

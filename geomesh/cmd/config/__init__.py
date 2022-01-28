@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from functools import cached_property
 # from genericpath import exists
 from glob import glob
-# import hashlib
+import hashlib
 import logging
 import os
 import pathlib
@@ -258,6 +258,7 @@ class RasterConfig(YamlComponentParser):
                     row.URL,
                     out=str(fname.parent),
                 )
+            logger.info(f'Yield raster {fname}')
             yield self.apply_opts(Raster(fname), request)
 
 
@@ -311,18 +312,20 @@ class GeomConfig(YamlComponentParser):
 
     def __init__(self, parser: "YamlParser"):
 
+        super().__init__(parser)
+
         if 'geom' not in parser.yaml:
             self.config = None
             return
         
-        if 'raster' not in parser.yaml["geom"]:
-            raster_config = None
+        if 'rasters' not in parser.yaml["geom"]:
+            geom_raster_config = None
 
-        raster_config = parser.yaml["geom"].get("raster")
-        if not isinstance(raster_config, list):
-            raise ValueError(f"geom.raster entry must be of type list, not {type(raster_config)}.")
+        geom_raster_config = parser.yaml["geom"].get("raster")
+        if not isinstance(geom_raster_config, list):
+            raise ValueError(f"geom.raster entry must be of type list, not {type(geom_raster_config)}.")
         
-        for item in raster_config:
+        for item in geom_raster_config:
             if not isinstance(item, dict):
                 raise ValueError("geom.raster entries must be a mapping.")
             
@@ -332,10 +335,26 @@ class GeomConfig(YamlComponentParser):
                 bool(item.get("tile_index", False))):
                 raise ValueError("geom.raster entries must contain only one of 'path' or 'tile_index' keys.")
 
-        
-        super().__init__(parser)
 
-        self.geom_raster_requests = raster_config
+        self.geom_raster_config = geom_raster_config
+        
+        if 'features' not in parser.yaml["geom"]:
+            geom_feature_config = None
+            
+        geom_feature_config = parser.yaml["geom"].get("features", [])
+        if not isinstance(geom_feature_config, list):
+            raise ValueError(f"geom.features entry must be of type list, not {type(geom_feature_config)}.")
+        
+        for item in geom_feature_config:
+            if not isinstance(item, dict):
+                raise ValueError("geom.features entries must be a mapping.")
+            
+            if not (
+                bool(item.get("mesh", False)) ^
+                bool(item.get("geometry", False))):
+                raise ValueError("geom.features entries must contain only one of 'mesh' or 'geometry' keys.")
+        
+        self.geom_features_config = geom_feature_config
 
     def __call__(self):
 
@@ -361,7 +380,7 @@ class GeomConfig(YamlComponentParser):
         """
         Returns a generator of (Raster, geom_opts) tuple.
         """
-        for geom_raster_request in self.geom_raster_requests:
+        for geom_raster_request in self.geom_raster_config:
             for raster in self.config.rasters.from_request(geom_raster_request):
                 if raster is not None:
                     yield raster, {
@@ -369,25 +388,22 @@ class GeomConfig(YamlComponentParser):
                         'zmax': geom_raster_request.get('zmax'),
                     }
 
-        # print(self.geom_raster_config, self.config.rasters)
-        # exit()
-        # config = self.config.yaml.get("rasters")
-        # if config is None: return
+    @property
+    def features(self):
+        for geom_feature_request in self.geom_features_config:
+            for feature in self.config.features.from_request(geom_feature_request):
+                if feature is not None:
+                    yield feature, {
+                        # 'zmin': geom_feature_request.get('zmin'),
+                        # 'zmax': geom_feature_request.get('zmax'),
+                    }
+
+        # config = self.config.yaml.get("feature", [])
         # if isinstance(config, dict):
         #     config = [config]
         # for request in config:
-        #     # print(request)
-        #     for raster in self.config.rasters.from_request(request):
-        #         yield raster, request
-
-    # @property
-    # def features(self):
-    #     config = self.config.yaml.get("feature", [])
-    #     if isinstance(config, dict):
-    #         config = [config]
-    #     for request in config:
-    #         for feature in self.config.features.from_request(request):
-    #             yield feature, request
+        #     for feature in self.config.features.from_request(request):
+        #         yield feature, request
 
     def get_build_id(self) -> Union[str, None]:
         """

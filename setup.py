@@ -82,8 +82,8 @@ class InstallJigsawCommand(distutils.cmd.Command):
                 "..",
                 "-DCMAKE_BUILD_TYPE=Release",
                 f"-DCMAKE_INSTALL_PREFIX={PYENV_PREFIX}",
-                f"-DCMAKE_C_COMPILER={gcc}",
-                f"-DCMAKE_CXX_COMPILER={cpp}",
+                f"-DCMAKE_C_COMPILER={os.getenv('CC', 'gcc')}",
+                f"-DCMAKE_CXX_COMPILER={os.getenv('CXX', 'cpp')}",
             ]
         )
         subprocess.check_call(["make", f"-j{cpu_count()}", "install"])
@@ -98,7 +98,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
         """
         return: major, minor, patch
         """
-        cpp = shutil.which("c++")
+        cpp = shutil.which(os.getenv("CXX", "cpp"))
         major, minor, patch = (
             subprocess.check_output([cpp, "--version"])
             .decode("utf-8")
@@ -112,7 +112,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
                 "JIGSAW requires GCC version 7 or later, got "
                 f"{major}.{minor}.{patch} from {cpp}"
             )
-        return shutil.which("gcc"), cpp
+        return shutil.which(os.getenv("CC", "gcc")), cpp
 
 
 conf = setuptools.config.read_configuration(PARENT / "setup.cfg")
