@@ -1,13 +1,13 @@
 import argparse
 from functools import cached_property
 import logging
-from typing import List
+# from typing import List
 
-import yaml
+# import yaml
 
-from geomesh import Geom, db
+from geomesh import db
 from geomesh.cmd import CliComponent, common
-from geomesh.cmd.config import YamlParser
+from geomesh.cmd.config.yamlparser import YamlParser
 # from geomesh.geom.collector import GeomCollector
 
 

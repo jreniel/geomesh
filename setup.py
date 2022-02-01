@@ -215,6 +215,7 @@ setuptools.setup(
         "appdirs",
         "pylas",
         "lazrs",
+        "pexpect",
     ],
     extras_require={
         "doc": doc_requires,
