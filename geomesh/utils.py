@@ -4,6 +4,8 @@ import logging
 from time import time
 from typing import Dict, Union
 
+
+import geopandas as gpd
 from jigsawpy import jigsaw_msh_t
 from matplotlib.collections import PolyCollection
 from matplotlib.path import Path
@@ -675,3 +677,60 @@ def interpolate_euclidean_grid_to_euclidean_mesh(
     dst.value = np.array(
         values.reshape((values.size, 1)),
         dtype=jigsaw_msh_t.REALS_t)
+
+
+def parallel_geom_combine(geom_list, nprocs):
+    """
+    Assumes all geometries have the same CRS.
+    Algorithm:
+        1. sort from smallest area to largest area.
+        2. Build r-tree index
+        3. take first smallest area and r-tree intersections, and group them together.
+        4. Repeat previous until all intersections have been exhausted.
+        5. Do a ops.unary_union for each group in parallel.
+        6. take the parallel results from this and repeat from step 1 until the list is len(3)
+        7. return a final call to ops.unary_union with remaining elements.  
+    """
+    from typing import List
+    from geomesh.geom.base import BaseGeom # avoid circular import
+   
+    
+    geom_list: List[BaseGeom]
+    for i, geom in enumerate(geom_list):
+        if not isinstance(geom, BaseGeom):
+            raise TypeError(f"item {i} in argument geom_list must be of type `Geom` not {type(geom)}.")
+    
+    gdf = gpd.GeoDataFrame([{'geometry': geom.get_multipolygon(dst_crs='epsg:4326'), 'id': i} for i, geom in enumerate(geom_list)], crs='epsg:4326')
+    rtree = gdf.sindex    
+    
+    for i, geom_i in reversed(list(enumerate(geom_list))):
+        data = rtree.intersection(gdf.iloc[i].geometry.bounds)
+        import matplotlib.pyplot as plt
+        ax = gdf.iloc[data].plot(); gdf.iloc[i].plot(ax=ax, facecolor='red'); plt.show()
+        breakpoint()
+        # for j, geom_j in reversed(list(enumerate(multipolygon_collection[i+1:]))):
+            # retre
+        # possible_indexes = set()
+        # for edge in hgrid.hull.edges().itertuples():
+        #     for index in list(nwm_r_index.intersection(edge.geometry.bounds)):
+        #         possible_indexes.add(index)
+        
+    # from shapely import ops
+    # from multiprocessing import Pool
+    # # job_args = 
+    # gdf = gpd.GeoDataFrame([{'geometry': geometry.multipolygon, 'id': i} for i, geometry in enumerate(geometries)], crs='epsg:4326')
+    # rtree = gdf.sindex
+    # with Pool(processes=nprocs) as pool:
+    #     while len(geometries) > 0:
+            
+    #         pool.map(
+    #             lambda x: ops.unary_union(x),
+    #             job_args
+    #         )
+    # breakpoint()
+    
+    # gdf.plot(facecolor='none')
+    # import matplotlib.pyplot as plt
+    # plt.show(block=False)
+    # breakpoint()
+

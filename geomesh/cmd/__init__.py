@@ -1,9 +1,9 @@
-from geomesh.cmd import common
-from geomesh.cmd.base import CliComponent
-# from geomesh.cmd.hfun import HfunCli
-from geomesh.cmd.geom.cli import GeomCli
-from geomesh.cmd.build import BuildCli
-from geomesh.cmd.cache import CacheCli
+from . import common
+from .base import CliComponent
+# from .hfun import HfunCli
+from .geom.cli import GeomCli
+from .build import BuildCli
+from .cache import CacheCli
 
 __all__ = [
     'CliComponent',

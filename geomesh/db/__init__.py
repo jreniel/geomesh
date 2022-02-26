@@ -1,4 +1,4 @@
-from geomesh.db import orm
-from geomesh.db.cache import Cache
+from . import orm
+from .cache import Cache
 
 __all__ = ['orm', 'Cache']

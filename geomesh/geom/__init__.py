@@ -1,5 +1,8 @@
-from geomesh.geom.geom import Geom
-from geomesh.geom.raster import RasterGeom
-from geomesh.geom.mesh import MeshGeom
+from .geom import Geom
+from .raster import RasterGeom
+from .mesh import MeshGeom
+# from .combiner import GeomCombiner
 
-__all__ = ["Geom", "RasterGeom", "MeshGeom"]
+__all__ = ["Geom", "RasterGeom", "MeshGeom", 
+# "GeomCombiner"
+]

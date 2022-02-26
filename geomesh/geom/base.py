@@ -11,6 +11,7 @@ from shapely.geometry import MultiPolygon
 # import utm
 
 from geomesh import utils
+from geomesh.figures import figure
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,14 @@ class BaseGeom(ABC):
 
     def __init__(self, crs):
         self._crs = crs
+
+    @figure
+    def make_plot(self, axes=None, **kwargs):
+        for polygon in self.multipolygon.geoms:
+            axes.plot(*polygon.exterior.xy, color="k")
+            for interior in polygon.interiors:
+                axes.plot(*interior.xy, color="r")
+        return axes
 
     @property
     def multipolygon(self) -> MultiPolygon:

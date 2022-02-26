@@ -28,13 +28,6 @@ class MeshGeom(BaseGeom):
     def get_multipolygon(self):
         return self.mesh.hull.multipolygon()
 
-    @figure
-    def make_plot(self, axes=None, **kwargs):
-        for polygon in self.multipolygon.geoms:
-            axes.plot(*polygon.exterior.xy, color="k")
-            for interior in polygon.interiors:
-                axes.plot(*interior.xy, color="r")
-        return axes
 
     @property
     def mesh(self) -> BaseMesh:

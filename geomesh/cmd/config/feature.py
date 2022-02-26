@@ -12,7 +12,7 @@ class FeatureConfig(YamlComponentParser):
     def __init__(self, parser: YamlParser):
 
         if 'features' not in parser.yaml: return
-        for feature in parser.yaml["features"].values():
+        for feature in parser.yaml["features"]:
             key = self.validate_feature_request(feature)
             if key == "mesh":
                 logger.info(f'Loading mesh from file: {pathlib.Path(feature[key])}.')

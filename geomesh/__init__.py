@@ -8,11 +8,11 @@ import matplotlib as mpl
 
 mpl.rcParams["agg.path.chunksize"] = 10000
 
-from geomesh.geom.geom import Geom
-from geomesh.hfun.hfun import Hfun
-from geomesh.raster import Raster
-from geomesh.driver import JigsawDriver
-from geomesh.mesh import Mesh
+from .geom.geom import Geom
+from .hfun.hfun import Hfun
+from .raster import Raster
+from .driver import JigsawDriver
+from .mesh import Mesh
 
 
 try:

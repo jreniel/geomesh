@@ -5,7 +5,8 @@ import geoalchemy2
 from pyproj import CRS
 from sqlalchemy.orm.session import Session
 
-from geomesh import Geom, db, Raster
+from ..geom import Geom
+from .. import db
 
 
 logger = logging.getLogger(__name__)

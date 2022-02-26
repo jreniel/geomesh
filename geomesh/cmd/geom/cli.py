@@ -5,9 +5,9 @@ import logging
 
 # import yaml
 
-from geomesh import db
-from geomesh.cmd import CliComponent, common
-from geomesh.cmd.config.yamlparser import YamlParser
+from ... import db
+from .. import CliComponent, common
+from ..config.yamlparser import YamlParser
 # from geomesh.geom.collector import GeomCollector
 
 

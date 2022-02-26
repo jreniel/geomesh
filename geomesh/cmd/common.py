@@ -4,7 +4,7 @@ import pathlib
 
 from appdirs import user_data_dir
 
-from geomesh import db
+from .. import db
 
 
 def add_log_level_to_parser(parser: argparse.ArgumentParser):

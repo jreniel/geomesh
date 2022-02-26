@@ -1,24 +1,25 @@
 import asyncio
 from functools import cached_property, partial
 import hashlib
+import json
 import logging
 from multiprocessing import Pool
 import pickle
 import sys
 import tempfile
-from time import time
 from typing import List, Union
 
 import hashlib
 import pexpect
-from pyproj import CRS, Transformer
+from pyproj import CRS
 from shapely import ops
-from shapely.geometry import MultiPolygon
+from shapely.geometry import box
 
-from geomesh import Raster
-from geomesh.cmd.config.server import ServerConfig, SlurmConfig
+from ...raster import Raster
+from .server import ServerConfig, SlurmConfig
 from ... import db
 from ...geom import Geom
+from ...geom.combiner import GeomCombiner
 from .yamlparser import YamlComponentParser
 
 logger = logging.getLogger(__name__)
@@ -110,42 +111,83 @@ class GeomConfig(YamlComponentParser):
             raise Exception(f'Unhandled value for `server_config` of type {type(self.config.server_config)}')
     
     def _build_geom_parallel(self) -> Geom:
-        
-        rasters_geom = self._get_rasters_geom_parallel()
+        # TODO: Verify priritization
+        return GeomCombiner([
+            *self._get_rasters_geom_parallel()
+            # *self._get_features_geom_parallel()
+        ], self.server_config)()
+        # rasters_geom = 
+        # features_geom = self._get_features_geom_parallel()
         
         # logger.info(f'Building raster geoms took {time()-start}.')
         # logger.info('Combining raster geoms (this takes some time)...')
         # logger.debug('This part needs to be parallelized, and it will be in the near future.')
-        print('WE HAVE THE GEOMS BUT NEED TO PARALLEL-COMBINE')
-        exit()
+        # print('WE HAVE THE GEOMS BUT NEED TO PARALLEL-COMBINE')
+        # exit()
         # return Geom(
         #     ops.unary_union([raster_geom.multipolygon for raster_geom in raster_geoms]), 
         #     crs="epsg:4326"
         # )
         
     
-    def _get_rasters_geom_parallel(self, start_index: int = None, end_index: int = None)-> List[MultiPolygon]:
-        
-        # end_index = if end_index == -1
-        
+    def _get_rasters_geom_parallel(self, start_index: int = None, end_index: int = None)-> List[Geom]:
         job_args = []
-        # raster_geom_opts = []
+        distributed_jobs = []
         for i, ((raster_path, raster_opts), geom_opts) in enumerate(self._get_raster_iter()):
             if start_index is not None:
                 if i < start_index:
                     continue
+            if 'chunk_size' in raster_opts:
+                distributed_jobs.append((i, ((raster_path, raster_opts), geom_opts)))
+            else:
+                job_args.append((
+                    raster_path,
+                    raster_opts,
+                    self.config.rasters.apply_opts,
+                    geom_opts,
+                ))
+            if end_index is not None:
+                if i == end_index:
+                    break
+
+        if len(job_args) > 0:
+            logger.info('Start building raster geoms as distributed parallel jobs.')
+            with Pool(processes=self.server_config.nprocs) as pool:
+                # NOTE: All raster geoms will be stored in lat/lon coords.
+                raster_geoms: List[Geom] = pool.starmap(
+                    self._build_raster_geom_parallel,
+                    job_args
+                )
+            pool.join()
+
+        if len(distributed_jobs) > 0:
+            logger.info('Start building raster geoms as chunked parallel jobs.')
+            for i, ((raster_path, raster_opts), geom_opts) in distributed_jobs:
+                raster_geoms.insert(
+                    i,
+                    self._build_raster_geom_distributed(
+                        raster_path,
+                        raster_opts,
+                        self.config.rasters.apply_opts,
+                        geom_opts,
+                        self.server_config.nprocs
+                    ))
+        return raster_geoms
+
+    def _build_geom_parallel_srun(self, start_index, end_index, tmpfiles):
+        job_args = []
+        # raster_geom_opts = []
+        for i, ((raster_path, raster_opts), geom_opts) in enumerate(self._get_raster_iter()):
+            # !!!!!!!!!!!!!!!!!!
             job_args.append((
                 raster_path,
                 raster_opts,
                 self.config.rasters.apply_opts,
                 geom_opts,
             ))
-            if end_index is not None:
-                if i == end_index:
-                    break
             # raster_geom_opts.append(geom_opts)
         logger.info('Start building raster geoms.')
-        start = time()
+        # start = time()
         with Pool(processes=self.server_config.nprocs) as pool:
             # NOTE: All raster geoms will be stored in lat/lon coords.
             raster_geoms = pool.starmap(
@@ -153,41 +195,18 @@ class GeomConfig(YamlComponentParser):
                 job_args
             )
         pool.join()
-        return raster_geoms
-
-    # def _build_geom_parallel_srun(self, start_index, end_index, tmpfiles):
-    #     job_args = []
-    #     # raster_geom_opts = []
-    #     for i, ((raster_path, raster_opts), geom_opts) in enumerate(self._get_raster_iter()):
-    #         !!!!!!!!!!!!!!!!!!
-    #         job_args.append((
-    #             raster_path,
-    #             raster_opts,
-    #             self.config.rasters.apply_opts,
-    #             geom_opts,
-    #         ))
-    #         # raster_geom_opts.append(geom_opts)
-    #     logger.info('Start building raster geoms.')
-    #     start = time()
-    #     with Pool(processes=self.server_config.nprocs) as pool:
-    #         # NOTE: All raster geoms will be stored in lat/lon coords.
-    #         raster_geoms = pool.starmap(
-    #             self._build_raster_geom,
-    #             job_args
-    #         )
-    #     pool.join()
-    #     logger.info(f'Building raster geoms took {time()-start}.')
-    #     logger.info('Combining raster geoms (this takes some time)...')
-    #     logger.debug('This part needs to be parallelized, and it will be in the near future.')
-    #     print('WE HAVE THE GEOMS BUT NEED TO PARALLEL-COMBINE')
-    #     exit()
-    #     return Geom(
-    #         ops.unary_union([raster_geom.multipolygon for raster_geom in raster_geoms]), 
-    #         crs="epsg:4326"
-    #     )
+        # logger.info(f'Building raster geoms took {time()-start}.')
+        logger.info('Combining raster geoms (this takes some time)...')
+        logger.debug('This part needs to be parallelized, and it will be in the near future.')
+        print('WE HAVE THE GEOMS BUT NEED TO PARALLEL-COMBINE')
+        exit()
+        return Geom(
+            ops.unary_union([raster_geom.multipolygon for raster_geom in raster_geoms]), 
+            crs="epsg:4326"
+        )
     
     @staticmethod
-    def _build_raster_geom(
+    def _build_raster_geom_parallel(
         raster_path,
         raster_opts,
         apply_opts,
@@ -196,37 +215,39 @@ class GeomConfig(YamlComponentParser):
         """Geoms generated by this function are all returned with crs="epsg:4326".
         This is so that all resulting geoms can be merged at the end of the algorithm on the same CRS.
         """
-        original_geom = Geom(apply_opts(Raster(raster_path), raster_opts), **geom_opts)
-        original_crs = original_geom.crs
-        wgs84_crs = CRS.from_epsg(4326)
-        if not original_crs.equals(wgs84_crs):
-            wgs84_mp = ops.transform(
-                Transformer.from_crs(
-                    original_crs,
-                    wgs84_crs,
-                    always_xy=True
-                ).transform,
-                original_geom.get_multipolygon()
-            )
-            del original_geom
-            return Geom(wgs84_mp, crs=wgs84_crs)
-        return Geom(original_geom.get_multipolygon(), crs=original_crs)
-        
+        wgs84 = CRS.from_epsg(4326)
+        return Geom(Geom(apply_opts(Raster(raster_path), raster_opts), **geom_opts).get_multipolygon(dst_crs=wgs84), crs=wgs84)
+
+    @staticmethod
+    def _build_raster_geom_distributed(
+        raster_path,
+        raster_opts,
+        apply_opts,
+        geom_opts,
+        nprocs,
+    ) -> Geom:
+        """Geoms generated by this function are all returned with crs="epsg:4326".
+        This is so that all resulting geoms can be merged at the end of the algorithm on the same CRS.
+        """
+        wgs84 = CRS.from_epsg(4326)
+        return Geom(Geom(apply_opts(Raster(raster_path), raster_opts), **geom_opts).get_multipolygon(dst_crs=wgs84, nprocs=nprocs), crs=wgs84)
+  
+
+
     def _build_geom_slurm(self):
         # https://stackoverflow.com/questions/42231161/asyncio-gather-vs-asyncio-wait
 
 
 
-        tmpfiles = []
         futures = []
         start_index = 0
         for i, ((raster_request, raster_opts), geom_opts) in enumerate(self._get_raster_iter()): 
-            tmpfiles.append(tempfile.NamedTemporaryFile())
             if (i+1) % self.server_config.cpus_per_task == 0:
-                futures.append(asyncio.gather(self._get_rasters_geom_from_srun(start_index, i, tmpfiles)))
+                futures.append(asyncio.gather(self._get_rasters_geom_from_srun(start_index, i)))
                 start_index = i + 1
-        raster_geom_paths = asyncio.get_event_loop().run_until_complete(asyncio.gather(*futures))
-        print(raster_geom_paths)
+        results = asyncio.get_event_loop().run_until_complete(asyncio.gather(*futures))
+        print(results)
+        breakpoint()
         exit()
                   
         
@@ -304,41 +325,22 @@ class GeomConfig(YamlComponentParser):
         # exit()
 
     
-    async def _get_rasters_geom_from_srun(self, start_index, end_index, tmp_outputs):
+    async def _get_rasters_geom_from_srun(self, start_index, end_index):
         
         
         wrap = [
-            # "from geomesh import Geom, Raster",
-            # "from geomesh.cmd.config.raster import RasterConfig",
-            # "from pyproj import CRS, Transformer",
-            # "from shapely import ops",
-            # "import geopandas as gpd",
-            # f"original_geom = Geom(Raster('{raster_path}'), **{geom_opts})",
-            # "original_crs = original_geom.crs",
-            # "wgs84_crs = CRS.from_epsg(4326)",
-            # "if not original_crs.equals(wgs84_crs):",
-            # "\twgs84_mp = ops.transform(",
-            # "\t\tTransformer.from_crs(",
-            # "\t\t\toriginal_crs,",
-            # "\t\t\twgs84_crs,",
-            # "\t\t\talways_xy=True",
-            # "\t\t).transform,",
-            # "\t\toriginal_geom.get_multipolygon()",
-            # "\t)",
-            # f"\tgpd.GeoDataFrame(wgs84_mp, crs=wgs84_crs).to_feather('{tmp_output.name}')",
-            # "else:",
-            # f"\tgpd.GeoDataFrame(original_geom.get_multipolygon(), crs=original_crs).to_feather('{tmp_output.name}')"
-            
-            "import pickle",
+            "import geopandas as gpd",
             "from geomesh.cmd.config.yamlparser import YamlParser",
             "from geomesh.cmd.config.server import ServerConfig",
-            f"yamlparser = YamlParser('{self.config.path.resolve()}')",
+            f"yamlparser = YamlParser('{self.config.path.resolve()}', skip_raster_checks=True)",
             f"yamlparser.geom.server_config = ServerConfig({self.server_config.cpus_per_task})",
             f"raster_geoms = yamlparser.geom._get_rasters_geom_parallel(start_index={start_index}, end_index={end_index})",
-            "print(raster_geoms)"
-            # f"with open('{tmp_output.name}', 'wb') as f:",
-            # f"\tpickle.dump(, f)"
-            
+            "data=[]",
+            "for raster_geom in raster_geoms:",
+            "\tdata.append({'geometry': raster_geom.get_multipolygon(dst_crs='epsg:4326')})",
+            "print('<--START_OUTPUT-->')",
+            "print(gpd.GeoDataFrame(data, crs='epsg:4326').to_json())",
+            "print('<--END_OUTPUT-->')",
         ]
 
         tmp_script = tempfile.NamedTemporaryFile()
@@ -355,7 +357,14 @@ class GeomConfig(YamlComponentParser):
 
         if p.exitstatus != 0:
             raise Exception(p.before)
-
+        try:
+            data = json.loads(p.before.split('<--START_OUTPUT-->')[-1].split('<--END_OUTPUT-->')[0])
+        except:
+            with open('/home/jrcalzada/TEST_YOUR_MIGHT.txt') as f:
+                f.write(p.before)
+            raise Exception("Failed to load json data.")
+        # print(p.before.split('<--START_OUTPUT-->')[-1].split('<--END_OUTPUT-->')[0])
+        # return json.loads(p.before.split('<--START_OUTPUT-->')[-1].split('<--END_OUTPUT-->')[0])
         # with open(tmp_output.name, 'rb') as f:
         #     return pickle.load(f)
     
@@ -422,63 +431,6 @@ class GeomConfig(YamlComponentParser):
         similar to an OMP (multithreaded) app.
 
         """
-
-
-
-        # tmpfiles = []
-        # futures = []
-        # tasks = []
-        # job_args = []
-        # for i, ((raster_request, raster_opts), geom_opts) in enumerate(self._get_raster_iter()): 
-        #     tmpfiles.append(tempfile.NamedTemporaryFile())
-        #     job_args.append((
-        #         raster_request,
-        #         raster_opts,
-        #         geom_opts,
-        #         tmpfiles[-1]
-        #     ))
-        #     if i % self.server_config.cpus_per_task == 0:
-        #         tasks.append(
-        #             partial(
-        #                 self._get_raster_build_id_from_srun, 
-        #                 job_args
-        #             )
-        #         )
-        #         futures.append(asyncio.gather(*[func() for func in tasks]))
-        #         tasks = []
-        # raster_geom_paths = asyncio.get_event_loop().run_until_complete(asyncio.gather(asyncio.gather(*futures)))
-        # print(raster_geom_paths)
-        # exit()
-         
-        # rasters_data = []
-        # features_data = []
-
-        # tmpfiles = []
-        # futures = []
-        # tasks = []
-        # job_args = []
-        # start_index = 0
-        # for i, ((raster_request, raster_opts), geom_opts) in enumerate(self._get_raster_iter()): 
-        #     tmpfiles.append(tempfile.NamedTemporaryFile())
-            # job_args.append((
-            #     raster_request,
-            #     raster_opts,
-            #     geom_opts,
-            #     tmpfiles[-1]
-            # ))
-            # breakpoint()
-            # if (i+1) % self.server_config.cpus_per_task == 0:
-            #     futures.append(asyncio.gather(self._get_raster_build_id_from_srun(start_index=start_index, end_index=i)))
-            #     # job_args = []
-            #     start_index = i + 1
-                
-        # print(futures)
-        # print('will launch event loop')
-        # raster_geom_paths = asyncio.get_event_loop().run_until_complete(asyncio.gather(*futures))
-        # print(raster_geom_paths)
-        # exit()
-            
-        # for 
         rasters_data, features_data = asyncio.get_event_loop().run_until_complete(
             asyncio.gather(
                 self._get_rasters_md5_from_srun(),
@@ -486,37 +438,6 @@ class GeomConfig(YamlComponentParser):
             )
         )
         return self._compute_build_id(rasters_data, features_data)
-    
-    async def _get_raster_build_id_from_srun(self):
-        tmp_output = tempfile.NamedTemporaryFile()
-        wrap = [
-            "import pickle",
-            "from geomesh.cmd.config.yamlparser import YamlParser",
-            "from geomesh.cmd.config.server import ServerConfig",
-            f"yamlparser = YamlParser('{self.config.path.resolve()}')",
-            f"yamlparser.geom.server_config = ServerConfig({self.server_config.cpus_per_task})",
-            f"with open('{tmp_output.name}', 'wb') as f:",
-            f"\tpickle.dump(yamlparser.geom._get_rasters_md5_parallel(), f)"
-        ]
-
-        tmp_script = tempfile.NamedTemporaryFile()
-        with open(tmp_script.name, 'w') as f:
-            f.write('\n'.join(wrap))
-
-        cmd = [
-            "srun",
-            f"-c{self.server_config.cpus_per_task}",
-            f"{sys.executable} {tmp_script.name}"
-        ]
-
-        with pexpect.spawn(' '.join(cmd), encoding='utf-8', timeout=None) as p:
-            await p.expect(pexpect.EOF, async_=True)
-        print(p.before)
-        if p.exitstatus != 0:
-            raise Exception(p.before)
-        with open(tmp_output.name, 'rb') as f:
-            return pickle.load(f)
-        
 
     @staticmethod
     def _compute_build_id(rasters_data, features_data):
@@ -578,15 +499,58 @@ class GeomConfig(YamlComponentParser):
     def _get_raster_md5(raster_path, raster_opts, apply_opts):
         return apply_opts(Raster(raster_path), raster_opts).md5
     
+    @cached_property
     def _get_raster_iter(self):
+        iter_items = []
         for geom_raster_request in self.geom_raster_config:
-            for raster, raster_opts in self.config.rasters.from_request(geom_raster_request, 'path'):
-                if raster is not None:
+            for raster_path, raster_opts in self.config.rasters.from_request(geom_raster_request, 'path'):
+                if 'bbox' in raster_opts and not ('tile_index' in raster_opts or 'tile-index' in raster_opts):
+                    import numpy as np
+                    bbox_selector = raster_opts['bbox']
+                    if isinstance(bbox_selector, dict):
+                        has_mesh = bool(bbox_selector.get('mesh', False))
+                        has_xmin = bool(bbox_selector.get('xmin', False))
+                        has_xmax = bool(bbox_selector.get('xmax', False))
+                        has_ymin = bool(bbox_selector.get('ymin', False))
+                        has_ymax = bool(bbox_selector.get('ymax', False))
+                        raster = Raster(raster_path)
+                        raster_bbox = raster.get_bbox()
+                        if has_mesh:
+                            mesh_bbox = raster_opts['bbox']['object'].get_bbox(crs=raster.crs)
+                            if not box(mesh_bbox.xmin, mesh_bbox.ymin, mesh_bbox.xmax, mesh_bbox.ymax).intersects(
+                                box(raster_bbox.xmin, raster_bbox.ymin, raster_bbox.xmax, raster_bbox.ymax)
+                            ):
+                                raster_path = None
+                            # mesh_bbox = raster_opts['bbox']['object'].get_bbox(crs=raster.crs)
+                            # raster.clip(box(mesh_bbox.xmin, mesh_bbox.ymin, mesh_bbox.xmax, mesh_bbox.ymax))
+                        elif np.any([has_xmin, has_xmax, has_ymin, has_ymax]):
+                            requested_bbox = box(
+                                bbox_selector.get('xmin', np.min(raster.x)),
+                                bbox_selector.get('ymin', np.min(raster.y)),
+                                bbox_selector.get('xmax', np.max(raster.x)),
+                                bbox_selector.get('ymax', np.max(raster.y)))
+                            if not (requested_bbox.intersects(
+                                box(raster_bbox.xmin, raster_bbox.ymin, raster_bbox.xmax, raster_bbox.ymax))):
+                                raster_path = None
+                            
+                            
+                    
+
+                    # if 'mesh' in raster_opts['bbox'] and 'path' in raster_opts:
+                    #     mesh_bbox = raster_opts['bbox']['object'].get_bbox(crs=raster.crs)
+                    #     raster_bbox = raster.get_bbox()
+                    #     if not box(mesh_bbox.xmin, mesh_bbox.ymin, mesh_bbox.xmax, mesh_bbox.ymax).intersects(
+                    #         box(raster_bbox.xmin, raster_bbox.ymin, raster_bbox.xmax, raster_bbox.ymax)
+                    #     ):
+                    #         raster_path = None
+                    # if 
+                if raster_path is not None:
                     geom_opts = {
                         'zmin': geom_raster_request.get('zmin'),
                         'zmax': geom_raster_request.get('zmax'),
                     }
-                    yield (raster, raster_opts), geom_opts
+                    iter_items.append(((raster_path, raster_opts), geom_opts))
+        return lambda: (item for item in iter_items)
    
 
    
@@ -634,16 +598,18 @@ class GeomConfig(YamlComponentParser):
         
         if len(self.geom_raster_config) == 0:
             return []
-
-        tmp_output = tempfile.NamedTemporaryFile()
+        
         wrap = [
             "import pickle",
+            "import json",
             "from geomesh.cmd.config.yamlparser import YamlParser",
             "from geomesh.cmd.config.server import ServerConfig",
-            f"yamlparser = YamlParser('{self.config.path.resolve()}')",
+            f"yamlparser = YamlParser('{self.config.path.resolve()}', skip_raster_checks=True)",
             f"yamlparser.geom.server_config = ServerConfig({self.server_config.cpus_per_task})",
-            f"with open('{tmp_output.name}', 'wb') as f:",
-            f"\tpickle.dump(yamlparser.geom._get_rasters_md5_parallel(), f)"
+            "raster_md5_data = yamlparser.geom._get_rasters_md5_parallel()",
+            "print('<--START_OUTPUT-->')",
+            "print(json.dumps(raster_md5_data))",
+            "print('<--END_OUTPUT-->')",
         ]
 
         tmp_script = tempfile.NamedTemporaryFile()
@@ -655,13 +621,14 @@ class GeomConfig(YamlComponentParser):
             f"-c{self.server_config.cpus_per_task}",
             f"{sys.executable} {tmp_script.name}"
         ]
+
         with pexpect.spawn(' '.join(cmd), encoding='utf-8', timeout=None) as p:
             await p.expect(pexpect.EOF, async_=True)
 
         if p.exitstatus != 0:
             raise Exception(p.before)
-        with open(tmp_output.name, 'rb') as f:
-            return pickle.load(f)
+        return json.loads(p.before.split('<--START_OUTPUT-->')[-1].split('<--END_OUTPUT-->')[0])
+
         
     async def _get_features_md5_from_srun(self):
 
@@ -673,7 +640,7 @@ class GeomConfig(YamlComponentParser):
             "import pickle",
             "from geomesh.cmd.config.yamlparser import YamlParser",
             "from geomesh.cmd.config.server import ServerConfig",
-            f"yamlparser = YamlParser('{self.config.path.resolve()}')",
+            f"yamlparser = YamlParser('{self.config.path.resolve()}', skip_raster_checks=True)",
             f"yamlparser.geom.server_config = ServerConfig({self.server_config.cpus_per_task})",
             f"with open('{tmp_output.name}', 'wb') as f:",
             "\tpickle.dump(yamlparser.geom._get_features_md5_parallel(), f)"

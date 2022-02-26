@@ -20,20 +20,19 @@ logger = logging.getLogger(__name__)
 
 class RasterConfig(YamlComponentParser):
 
-    def __init__(self, parser: YamlParser):
+    def __init__(self, parser: YamlParser, skip_checks: bool = False):
 
         if 'rasters' not in parser.yaml:
             return
-        for raster in parser.yaml['rasters'].copy().values():
-            self.validate_raster_request(raster)
-            has_tile_index = bool(raster.get("tile-index", False))
-            has_tile_index_under = bool(raster.get("tile_index", False))
-            if has_tile_index or has_tile_index_under:
-                parser.yaml['rasters'].update({'_local_paths': []})
-                # TODO: Expand tile will crash execution if download fails.
-                #       This should be wrapped under a retry decorator.
-                for raster_path in self.expand_tile_index(raster, yield_type='path'):
-                    parser.yaml['rasters']['_local_paths'].append(raster_path)
+        if skip_checks == False:
+            for raster in parser.yaml['rasters']:
+                self.validate_raster_request(raster)
+                has_tile_index = bool(raster.get("tile-index", False))
+                has_tile_index_under = bool(raster.get("tile_index", False))
+                if has_tile_index or has_tile_index_under:
+                    # this forces the download upon init
+                    for _ in self.expand_tile_index(raster, yield_type='path'):
+                        pass
                     
                 
             # if key == "mesh":
@@ -134,26 +133,47 @@ class RasterConfig(YamlComponentParser):
 
     @staticmethod
     def apply_opts(raster: Raster, opts: Dict) -> Union[Raster, None]:
-        for key, opt in opts.items():
+        import numpy as np
+        for key, selector in opts.items():
             if key == "resample":
-                raster.resample(opt["scaling_factor"])
+                raster.resample(selector["scaling_factor"])
             if key == "warp":
-                raster.warp(opt)
+                raster.warp(selector)
             if key == "fill_nodata":
                 raster.fill_nodata()
             if key == "clip":
-                raise NotImplementedError('clip')
-                # raster.clip(self.get_clip_from_opts(opt))
+                if 'bbox' in selector:
+                    bbox_selector = selector['bbox']
+                    if isinstance(bbox_selector, dict):
+                        has_mesh = bool(bbox_selector.get('mesh', False))
+                        has_xmin = bool(bbox_selector.get('xmin', False))
+                        has_xmax = bool(bbox_selector.get('xmax', False))
+                        has_ymin = bool(bbox_selector.get('ymin', False))
+                        has_ymax = bool(bbox_selector.get('ymax', False))
+                        if has_mesh:
+                            mesh_bbox = selector['bbox']['object'].get_bbox(crs=raster.crs)
+                            raster.clip(box(mesh_bbox.xmin, mesh_bbox.ymin, mesh_bbox.xmax, mesh_bbox.ymax))
+                        elif np.any([has_xmin, has_xmax, has_ymin, has_ymax]):
+                            raster.clip(box(
+                                bbox_selector.get('xmin', np.min(raster.x)),
+                                bbox_selector.get('ymin', np.min(raster.y)),
+                                bbox_selector.get('xmax', np.max(raster.x)),
+                                bbox_selector.get('ymax', np.max(raster.y))
+                            ))
+                        else:
+                            raise NotImplementedError(f'clip option {selector} 1')
+
+                    else:
+                        raise NotImplementedError(f'invalid bbox_selector: {bbox_selector}')
+
+                else:
+                    raise NotImplementedError(f'clip option {selector} 3')
             if key == "chunk_size":
-                raster.chunk_size = opt
+                raster.chunk_size = selector
             if key == "overlap":
-                raster.overlap = opt
-            # if key == "bbox":
-            #     raise NotImplementedError('bbox')
-                # try:
-                #     raster.clip(self.get_bbox_clip_from_opts(opt, raster.crs))
-                # except ValueError:
-                #     return None
+                raster.overlap = selector
+            # if key == 'gaussian_filter':
+
         return raster
     
     @_check_yield_type
@@ -161,8 +181,25 @@ class RasterConfig(YamlComponentParser):
         tile_index_file = request.get("tile_index") if request.get('tile-index') is None else request.get('tile-index')
         bbox = request.get('bbox')
         if bbox is not None:
-            gdf_crs = gpd.read_file(tile_index_file).crs
-            bbox = box(*bbox['object'].get_bbox(crs=gdf_crs).bounds)
+            has_mesh = bool(bbox.get('mesh', False))
+            has_xmin = bool(bbox.get('xmin', False))
+            has_xmax = bool(bbox.get('xmax', False))
+            has_ymin = bool(bbox.get('ymin', False))
+            has_ymax = bool(bbox.get('ymax', False))
+            gdf = gpd.read_file(tile_index_file)
+            import numpy as np
+            if has_mesh:
+                # print(gdf.crs)
+                # exit()
+                bbox = bbox['object'].get_bbox(crs=gdf.crs, return_type='shapely')
+            elif np.any([has_xmin, has_xmax, has_ymin, has_ymax]):
+                gdf_bounds = gdf.bounds
+                bbox = box(
+                    bbox.get('xmin', np.min(gdf_bounds['minx'])),
+                    bbox.get('ymin', np.min(gdf_bounds['miny'])),
+                    bbox.get('xmax', np.max(gdf_bounds['maxx'])),
+                    bbox.get('ymax', np.max(gdf_bounds['maxx'])),
+                )
         gdf = gpd.read_file(
             tile_index_file,
             bbox=bbox,
@@ -215,9 +252,9 @@ class RasterConfig(YamlComponentParser):
     #                     feat_crs = CRS.from_user_input(feat_crs)
     #     return feat_crs
     
-    def get_bbox_clip_from_opts(self, opts: Dict, raster_crs: Union[CRS, None]) -> Polygon:
-        if 'mesh' in opts: return box(*opts['object'].get_bbox(crs=raster_crs).bounds)
-        raise NotImplementedError(opts)
+    # def get_bbox_clip_from_opts(self, opts: Dict, raster_crs: Union[CRS, None]) -> Polygon:
+    #     if 'mesh' in opts: return box(*opts['object'].get_bbox(crs=raster_crs).bounds)
+    #     raise NotImplementedError(opts)
         
         # opts may be a mesh, a bbox array or a shapefile
         # print(key, opts)

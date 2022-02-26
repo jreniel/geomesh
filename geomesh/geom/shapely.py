@@ -1,4 +1,5 @@
-from pyproj import CRS
+from pyproj import CRS, Transformer
+from shapely import ops
 from shapely.geometry import Polygon, MultiPolygon
 from typing import Union
 
@@ -35,7 +36,18 @@ class MultiPolygonGeom(ShapelyGeom):
         self._multipolygon = multipolygon
         super().__init__(crs)
 
-    def get_multipolygon(self):
+    def get_multipolygon(self, dst_crs=None):
+        if dst_crs is not None:
+            dst_crs = CRS.from_user_input(dst_crs)
+            if not self.crs.equals(dst_crs):
+                return ops.transform(
+                    Transformer.from_crs(
+                        self.crs,
+                        dst_crs,
+                        always_xy=True
+                    ).transform,
+                    self._multipolygon
+                )
         return self._multipolygon
 
     @property

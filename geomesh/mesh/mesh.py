@@ -18,7 +18,7 @@ import numpy as np
 from pyproj import CRS, Transformer
 import requests
 from scipy.interpolate import RectBivariateSpline, griddata
-from shapely.geometry import Polygon, LineString, LinearRing, MultiPolygon
+from shapely.geometry import Polygon, LineString, LinearRing, MultiPolygon, box
 
 from geomesh import utils
 from geomesh.figures import figure, get_topobathy_kwargs
@@ -394,8 +394,10 @@ class EuclideanMesh2D(EuclideanMesh):
             )
 
     def get_bbox(
-        self, crs: Union[str, CRS] = None,
-    ) -> Union[Polygon, Bbox]:
+        self, crs: Union[str, CRS] = None, return_type='matplotlib',
+    ) -> Bbox:
+        if return_type not in ['shapely', 'matplotlib']:
+            raise ValueError(f'Argument `return_type` must be "shapely" or "matplotlib", not {return_type}.')
         xmin, xmax = np.min(self.coord[:, 0]), np.max(self.coord[:, 0])
         ymin, ymax = np.min(self.coord[:, 1]), np.max(self.coord[:, 1])
         crs = self.crs if crs is None else crs
@@ -405,7 +407,13 @@ class EuclideanMesh2D(EuclideanMesh):
                 (xmin, xmax), (ymin, ymax) = transformer.transform(
                     (xmin, xmax), (ymin, ymax)
                 )
-        return Bbox([[xmin, ymin], [xmax, ymax]])
+        if return_type == 'shapely':
+            return box(xmin, ymin, xmax, ymax)
+        elif return_type == 'matplotlib':
+            return Bbox([[xmin, ymin], [xmax, ymax]])
+        else:
+            raise Exception(f'Unhandled return_type={return_type}.')
+
 
     # @property
     # def boundaries(self):

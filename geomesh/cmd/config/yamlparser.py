@@ -25,7 +25,7 @@ class YamlParser:
 
     VERSION = 0
 
-    def __init__(self, path, cache: db.Cache = None):
+    def __init__(self, path, cache: db.Cache = None, skip_raster_checks=False):
         self._path = pathlib.Path(path)
         self._cache = cache
         self._features = FeatureConfig(self)
