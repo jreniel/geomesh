@@ -49,7 +49,7 @@ class RasterGeom(BaseGeom):
         zmax = self.zmax if zmax is None else zmax
 
         if zmin is None and zmax is None:
-            return self.raster.get_multipolygon()
+            return box(*self.raster.get_bbox().extents)
 
         if nprocs is not None:
             multipolygon = self._get_multipolygon_parallel(nprocs, zmin, zmax, dst_crs)

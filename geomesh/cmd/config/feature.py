@@ -11,7 +11,9 @@ class FeatureConfig(YamlComponentParser):
 
     def __init__(self, parser: YamlParser):
 
-        if 'features' not in parser.yaml: return
+        if 'features' not in parser.yaml:
+            return
+
         for feature in parser.yaml["features"]:
             key = self.validate_feature_request(feature)
             if key == "mesh":
@@ -23,17 +25,21 @@ class FeatureConfig(YamlComponentParser):
                 })
         super().__init__(parser)
 
-
-
-    def from_request(self, request: Dict) -> Generator:
+    def from_request(self, request: Dict, yield_type='path') -> Generator:
         rtype = self.get_request_type(request)
         if rtype == "mesh":
-            opts = self.get_opts(request)
-            mesh = request.get("obj")
-            if mesh is None:
-                mesh = Mesh.open(request["mesh"], crs=opts.get("crs", None))
-                request.setdefault("obj", mesh)
-            yield mesh
+            # opts = self.get_opts(request)
+            if yield_type != 'path':
+                mesh = request.get("obj")
+                if mesh is None:
+                    mesh = Mesh.open(request["mesh"],
+                                    crs=request.get("crs", None)
+                                    )
+                    request.setdefault("obj", mesh)
+                yield mesh
+            else:
+                yield request["mesh"], None
+                
         # elif rtype == 'geometry':
             
         else:
@@ -56,16 +62,16 @@ class FeatureConfig(YamlComponentParser):
         if has_mesh: return "mesh"
         if has_shape: return "geometry"
 
-    # def get_opts(self, request: Dict) -> Dict:
-    #     print('feature', request)
-    #     ftype = self.get_request_type(request)
-    #     opts = {}
-    #     for feat_request in self.config.features:
-    #         if ftype in feat_request:
-    #             if request[ftype] == feat_request[ftype]:
-    #                 opts = feat_request.copy()
-    #                 opts.pop(ftype)
-    #     return opts
+    def get_opts(self, request: Dict) -> Dict:
+        # print('feature', request)
+        ftype = self.get_request_type(request)
+        opts = {}
+        for feat_request in self.config.features:
+            if ftype in feat_request:
+                if request[ftype] == feat_request[ftype]:
+                    opts = feat_request.copy()
+                    opts.pop(ftype)
+        return opts
 
     # def get_bbox_from_request(
     #     self, request: Dict

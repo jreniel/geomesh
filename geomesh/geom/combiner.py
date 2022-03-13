@@ -35,6 +35,8 @@ class GeomCombiner:
         import matplotlib.pyplot as plt
 
         geom_gdf = gpd.GeoDataFrame([{'geometry': geom.multipolygon, 'id': i} for i, geom in enumerate(self.geom_list)])
+        geom_gdf.plot()
+        plt.show()
         rtree = geom_gdf.sindex
 
         for i, geom in enumerate(self.geom_list):
@@ -44,7 +46,7 @@ class GeomCombiner:
                 geom_mp = geom_mp.difference(other_geom.multipolygon)
                 gpd.GeoDataFrame([{'geometry': geom_mp}], crs='epsg:4326').plot()
                 plt.show()
-            breakpoint()
+            # breakpoint()
         # for i, geom in reversed(list(enumerate(self.geom_list)):
         #     rtree.intersection()
 

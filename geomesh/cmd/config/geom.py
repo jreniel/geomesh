@@ -457,6 +457,7 @@ class GeomConfig(YamlComponentParser):
         
     def _get_features_md5_parallel(self):
         with Pool(processes=self.server_config.nprocs) as pool:
+            # breakpoint()
             result = pool.starmap(
                 self._get_feature_md5,
                 [(feature_request) for feature_request, _ in self._get_feature_iter(yield_type='path')]
@@ -473,10 +474,16 @@ class GeomConfig(YamlComponentParser):
         return hash_md5.hexdigest()
     
     def _get_feature_iter(self, yield_type='path'):
+        # print(self.geom_feature_config)
         for geom_feature_request in self.geom_feature_config:
-            for feature, geom_opts in self.config.features.from_request(geom_feature_request, yield_type):
+            for feature, geom_opts in self.config.features.from_request(
+                geom_feature_request,
+                # yield_type
+                ):
+                print('_get_feature_iter')
+                breakpoint()
                 yield feature, geom_opts
-    
+
     def _get_rasters_md5_parallel(self):
         job_args = []
         raster_geom_opts = []
