@@ -1,10 +1,14 @@
+from collections import defaultdict
 from functools import lru_cache
+from itertools import permutations
 from multiprocessing import Pool, cpu_count
 import os
 import pathlib
 import tempfile
 from typing import Union, List
 import warnings
+
+from attr import has
 
 import geopandas as gpd
 from jigsawpy import jigsaw_msh_t, savemsh, loadmsh, savevtk
@@ -159,10 +163,11 @@ class Nodes:
 
     @lru_cache(maxsize=1)
     def __call__(self):
-        return {
-            i + 1: (coord, self.mesh.value[i][0] if len(self.mesh.value[i]) <= 1 else self.mesh.value[i])
-            for i, coord in enumerate(self.coords())
-        }
+        # return {
+        #     i + 1: (coord, self.mesh.value[i][0] if len(self.mesh.value[i]) <= 1 else self.mesh.value[i])
+        #     for i, coord in enumerate(self.coords())
+        # }
+        return {i + 1: (coord, self.mesh.value[i]) for i, coord in enumerate(self.coords())}
 
     def id(self):
         return list(self().keys())
@@ -198,18 +203,17 @@ class Nodes:
             }
         return self._index_to_id
 
-    # def get_indexes_around_index(self, index):
-    #     indexes_around_index = self.__dict__.get('indexes_around_index')
-    #     if indexes_around_index is None:
-    #         def append(geom):
-    #             for simplex in geom:
-    #                 for i, j in permutations(simplex, 2):
-    #                     indexes_around_index[i].add(j)
-    #         indexes_around_index = defaultdict(set)
-    #         append(self.gr3.elements.triangles())
-    #         append(self.gr3.elements.quads())
-    #         self.__dict__['indexes_around_index'] = indexes_around_index
-    #     return list(indexes_around_index[index])
+    def get_indexes_around_index(self, index):
+        if not hasattr(self, '_indexes_around_index'):
+            def append(geom):
+                for simplex in geom:
+                    for i, j in permutations(simplex, 2):
+                        indexes_around_index[i].add(j)
+            indexes_around_index = defaultdict(set)
+            append(self.mesh.elements.triangles())
+            append(self.mesh.elements.quads())
+            self._indexes_around_index = indexes_around_index
+        return list(self._indexes_around_index[index])
 
 
 class Elements:
@@ -586,19 +590,19 @@ class Mesh(BaseMesh):
                 pass
             else:
                 raise e
-
-        try:
-            return Mesh(utils.sms2dm_to_msh_t(sms2dm.read(path, crs=crs)))
-        except ValueError:
-            pass
-
         try:
             msh_t = jigsaw_msh_t()
-            loadmsh(msh_t, path)
+            loadmsh(path, msh_t)
             msh_t.crs = crs
             return Mesh(msh_t)
         except Exception:
             pass
+
+        try:
+            return Mesh(utils.sms2dm_to_msh_t(sms2dm.read(path, crs=crs)))
+        except ValueError: # TODO: We also have KeyError: 'ND' File "geomesh/utils.py", line 586, in sms2dm_to_msh_t in enumerate(_sms2dm['ND'].keys())}
+            pass
+
 
         raise TypeError(f"Unable to automatically determine file type for {str(path)}.")
 

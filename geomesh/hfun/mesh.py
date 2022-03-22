@@ -3,6 +3,8 @@ from typing import Union
 
 from jigsawpy import jigsaw_msh_t
 
+from geomesh.figures import figure
+from geomesh import utils
 from geomesh.hfun.base import BaseHfun
 from geomesh.mesh.base import BaseMesh
 from geomesh.mesh.mesh import Mesh
@@ -12,6 +14,12 @@ class MeshHfun(BaseHfun):
 
     def __init__(self, mesh: Union[BaseMesh, str, os.PathLike, jigsaw_msh_t]):
         self._mesh = mesh
+        
+    def msh_t(self, dst_crs=None) -> jigsaw_msh_t:
+        msh_t = self.mesh.msh_t
+        if dst_crs is not None:
+            utils.reproject(msh_t, dst_crs)
+        return msh_t
 
     @property
     def mesh(self) -> BaseMesh:
@@ -37,3 +45,61 @@ class MeshHfun(BaseHfun):
             )
 
         self.__mesh = mesh
+        
+    @property
+    def crs(self):
+        return self.mesh.crs
+    
+
+    @figure
+    def tricontourf(
+        self,
+        axes=None,
+        show=False,
+        figsize=None,
+        extend="both",
+        elements=True,
+        cmap="jet",
+        color="k",
+        linewidth=0.07,
+        **kwargs,
+    ):
+        msh_t = self.msh_t()
+        axes.tricontourf(
+            msh_t.vert2["coord"][:, 0],
+            msh_t.vert2["coord"][:, 1],
+            msh_t.tria3["index"],
+            msh_t.value.flatten(),
+            **kwargs,
+        )
+        if elements is True:
+            axes.triplot(
+                msh_t.vert2["coord"][:, 0],
+                msh_t.vert2["coord"][:, 1],
+                msh_t.tria3["index"],
+                color=color,
+                linewidth=linewidth,
+            )
+        return axes
+
+    @figure
+    def triplot(
+        self,
+        axes=None,
+        show=False,
+        figsize=None,
+        color="k",
+        linewidth=0.07,
+        **kwargs,
+    ):
+        msh_t = self.msh_t()
+        axes.triplot(
+            msh_t.vert2["coord"][:, 0],
+            msh_t.vert2["coord"][:, 1],
+            msh_t.tria3["index"],
+            color=color,
+            linewidth=linewidth,
+            **kwargs,
+        )
+        return axes
+

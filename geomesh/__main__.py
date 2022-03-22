@@ -1,28 +1,27 @@
 #! /usr/bin/env python
 import argparse
 from datetime import datetime
-import inspect
 import logging
 import sys
 
 from pytz import timezone
 
-from geomesh.cmd import *
+from .cmd.build import BuildCli
+# from .cmd.raster_geom_build import GeomCli
+
+# pygeos==0.10.2 && shapely==1.8.0
 
 
 def init_logger():
     tmp_parser = argparse.ArgumentParser(add_help=False)
-    common.add_log_level_to_parser(tmp_parser)
+    tmp_parser.add_argument(
+        "--log-level",
+        choices=["warning", "info", "debug"],
+        default="warning",
+    )
     tmp_args, _ = tmp_parser.parse_known_args()
     if tmp_args.log_level is not None:
         logging.basicConfig(
-            level={
-                "warning": logging.WARNING,
-                "info": logging.INFO,
-                "debug": logging.DEBUG,
-                "critical": logging.CRITICAL,
-                "notset": logging.NOTSET,
-            }[tmp_args.log_level],
             format="[%(asctime)s] %(name)s %(levelname)s: %(message)s",
             force=True,
         )
@@ -32,35 +31,36 @@ def init_logger():
         ).timetuple()
 
         logging.captureWarnings(True)
-
+        logging.getLogger('geomesh').setLevel({
+                "warning": logging.WARNING,
+                "info": logging.INFO,
+                "debug": logging.DEBUG,
+                "critical": logging.CRITICAL,
+                "notset": logging.NOTSET,
+            }[tmp_args.log_level])
 
 def main():
-
     init_logger()
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="clitype")
-
-    clitypes = [
-        clitype
-        for cliname, clitype in inspect.getmembers(
-            sys.modules[__name__], inspect.isclass
-        )
-        if issubclass(clitype, CliComponent)
-    ]
-    clitypes.pop(clitypes.index(CliComponent))
-
-    for clitype in clitypes:
-        clitype.add_subparser_action(subparsers)
-
+    _add_build_cli_actions(subparsers)
+    # _add_geom_cli_actions(subparsers)
     args = parser.parse_args()
+    if args.clitype == 'build':
+        BuildCli(args.config).main()
+    # elif args.clitype == 'geom':
+    #     GeomCli(args).main()
 
-    if args.clitype is not None:
-        for clitype in clitypes:
-            if args.clitype.replace("_", "").replace("-", "") == f"{clitype.__name__.lower()[:-3]}":
-                clitype(args)
-                break
-    else:
-        parser.parse_args(sys.argv + ['-h'])
+def _add_build_cli_actions(subparsers):
+    parser = subparsers.add_parser('build')
+    parser.add_argument('config')
+
+# def _add_geom_cli_actions(subparsers):
+#     parser = subparsers.add_parser('geom')
+#     actions= parser.add_subparsers(dest='geom_actions')
+#     build_parser = actions.add_parser('build')
+#     build_parser.add_argument('--raster', '-r', dest='rasters', action='append', metavar='uri')
+#     build_parser.add_argument('feature', nargs='?')
 
 
 if __name__ == "__main__":

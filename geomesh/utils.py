@@ -605,18 +605,23 @@ def sms2dm_to_msh_t(_sms2dm: Dict) -> jigsaw_msh_t:
     return msh
 
 
-def reproject_parallel_worker(coord, src_crs, dst_crs):
-    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-    return transformer.transform(coord[0], coord[1])
+# def reproject_parallel_worker(coord, src_crs, dst_crs):
+#     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+#     return transformer.transform(coord[0], coord[1])
 
 
 def reproject(
         mesh: jigsaw_msh_t,
         dst_crs: Union[str, CRS],
-        nprocs=None,
+        # nprocs=None,
 ):
     src_crs = mesh.crs
-    dst_crs = CRS.from_user_input(dst_crs)
+    if not isinstance(dst_crs, CRS):
+        dst_crs = CRS.from_user_input(dst_crs)
+    if not isinstance(src_crs, CRS):
+        breakpoint()
+        src_crs = CRS.from_user_input(src_crs)
+
     start = time()
     logger.debug(f'Begin transforming points from {mesh.crs} to {dst_crs}.')
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)

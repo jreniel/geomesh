@@ -51,6 +51,8 @@ class JigsawDriver:
         output_mesh.mshID = 'euclidean-mesh'
         output_mesh.ndims = 2
         local_azimuthal_projection = None
+        if dst_crs is not None:
+            self.dst_crs = dst_crs
         if self.geom is not None:
             geom = self.geom.msh_t(dst_crs=self.dst_crs)
 
@@ -117,7 +119,9 @@ class JigsawDriver:
 
     @property
     def output_mesh(self):
-        return Mesh(self.msh_t(dst_crs=self.dst_crs))
+        return Mesh(self.msh_t(
+            dst_crs=self.dst_crs
+            ))
 
     @property
     def geom(self) -> BaseGeom:
@@ -172,6 +176,8 @@ class JigsawDriver:
                 # raise ValueError(
                 #     'Argument dst_crs must not be None if the inputs (geom/hfun/initial_mesh) are in different CRS\'s.'
                 # )
+        if dst_crs is None:
+            dst_crs = CRS.from_epsg(4326)
         self._dst_crs = dst_crs
 
 

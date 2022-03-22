@@ -5,7 +5,7 @@ from typing import List, Union
 
 from pyproj import CRS
 
-from ..cmd.config.server import ServerConfig, SlurmConfig
+from ..cmd._config.server import ServerConfig, SlurmConfig
 from .base import BaseGeom
 from .geom import Geom
 from .shapely import MultiPolygonGeom

@@ -40,6 +40,9 @@ if util.find_spec("colored_traceback") is not None:
 # tmpdir = str(pathlib.Path(tempfile.gettempdir()+'/geomesh'))+'/'
 # os.makedirs(tmpdir, exist_ok=True)
 
+import warnings
+warnings.filterwarnings("ignore", ".*will be removed in Shapely 2.0. Use the `geoms` property to access the constituent parts of a multi-part geometry.")
+
 
 __all__ = [
     "Geom",

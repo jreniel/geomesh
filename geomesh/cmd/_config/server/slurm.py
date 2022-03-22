@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from geomesh.cmd.config.server.base import ServerConfig
+from geomesh.cmd._config.server.base import ServerConfig
 
 class SlurmConfig(ServerConfig):
     """Configuration object for SLURM-enabled servers"""

@@ -750,6 +750,10 @@ class RasterHfun(BaseHfun, Raster):
     @verbosity.setter
     def verbosity(self, verbosity: int):
         self._verbosity = verbosity
+        
+    @property
+    def crs(self):
+        return self.raster.crs
 
     def get_contour(self, level: float, window: rasterio.windows.Window = None):
         logger.debug(f"RasterHfun.get_raster_contours(level={level}, window={window})")
