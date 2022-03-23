@@ -288,13 +288,19 @@ class HfunConfigParser(UserDict):
                 raise TypeError(f'Unhandled type: {request}')
 
     def _get_mesh_request_cmd(self, path, hfun_opts, output_filename):
-        cmd = [
+        cmd = []
+        if self.slurm is not None:
+            cmd.extend([
+                f'srun',
+                f'-c{self.slurm.cpus_per_task}',
+            ])
+        cmd.extend([
                 f'{sys.executable}',
                 f'{Path(__file__).parent.resolve() / "mesh_hfun_build.py"}',
                 f"{Path(path).resolve()}",
                 f'--to-pickle={output_filename.resolve()}',
                 # f'--to-file={output_filename.resolve()}',
-            ]
+            ])
         if 'vmin' in hfun_opts:
             cmd.append(f"--hmin={hfun_opts['vmin']}")
         
@@ -303,6 +309,9 @@ class HfunConfigParser(UserDict):
         
         if 'crs' in hfun_opts:
             cmd.append(f'--crs={hfun_opts["crs"]}')
+
+        if self.slurm is not None:
+            cmd.append(f'--nprocs={self.slurm.cpus_per_task}')
 
         return cmd
 

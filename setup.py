@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#!/usr/bin/env python
 import setuptools
 import subprocess
 from importlib import util
@@ -199,7 +199,7 @@ setuptools.setup(
         "jigsawpy @ git+https://github.com/dengwirda/jigsaw-python@master",
         "matplotlib",
         "netCDF4",
-        "scipy>=1.7.1",
+        "scipy",
         "pyproj>=3.0",
         "fiona",
         "rasterio",

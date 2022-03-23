@@ -63,7 +63,7 @@ class BuildCli:
         else:
             if len(hfun_result) > 0:
                 hfun = self.finalize_hfun(hfun_result)
-
+        geom.make_plot(show=True)
         driver = JigsawDriver(
             geom=geom,
             hfun=hfun,
@@ -120,7 +120,7 @@ class BuildCli:
     
                     # raise NotImplementedError
         # gdf_diff = self._generate_geom_difference(gdf)
-        mp = gdf.iloc[0].geometry
+        mp = gdf.unary_union
         if isinstance(mp, Polygon):
             mp = MultiPolygon([mp])
         return MultiPolygonGeom(mp, crs=gdf.crs)
