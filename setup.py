@@ -75,7 +75,7 @@ class InstallJigsawCommand(distutils.cmd.Command):
         # os.chdir("external/jigsaw")
         os.makedirs("build", exist_ok=True)
         os.chdir("build")
-        gcc, cpp = self.get_gcc_version()
+        # gcc, cpp = self.get_gcc_version()
         subprocess.check_call(
             [
                 "cmake",

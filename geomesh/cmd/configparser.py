@@ -16,8 +16,7 @@ import numpy as np
 from shapely.geometry import box
 import yaml
 
-from .raster_opts import append_cmd_opts as append_raster_cmd_opts
-from .tile_index import expand_tile_index
+from .raster_opts import append_cmd_opts as append_raster_cmd_opts, iter_raster_requests
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ class GeomConfigParser(UserDict):
         tasks = []
         if self.slurm is None:
             return tasks
-        for path, geom_opts in self.iter_raster_requests():
+        for path, geom_opts in iter_raster_requests(self):
             # TODO !!!!! Limit number of concurrent jobs with --dependency=singleton, --job-name=XXX
             tasks.append(asyncio.get_event_loop().create_task(self._await_geom_raster_request(path, geom_opts, output_directory)))
         for path, geom_opts in self.iter_feature_requests():
@@ -115,17 +114,7 @@ class GeomConfigParser(UserDict):
 
         return cmd
         
-    def iter_raster_requests(self):
-        for request in self.get('rasters', []):
-            if 'path' in request:
-                logger.info(f'Requested raster is a local path: {request["path"]}')
-                for path, request in self._expand_raster_request_path(request):
-                    yield path, request
-            elif 'tile_index' in request:
-                for path, request in expand_tile_index(self, request):
-                    yield path, request
-            else:
-                raise TypeError(f'Unhandled type: {request}')
+
             
     def iter_feature_requests(self):
         for request in self.get('features', []):
@@ -139,23 +128,7 @@ class GeomConfigParser(UserDict):
             #         yield feature
             else:
                 raise TypeError(f'Unhandled type: {request}')
-            
-    def _expand_raster_request_path(self, request: Dict) -> Generator:
-        request = request.copy()
-        requested_paths = request.pop("path")
-        if isinstance(requested_paths, str):
-            requested_paths = [requested_paths]
-        for requested_path in list(requested_paths):
-            requested_path = os.path.expandvars(requested_path)
-            if '*' in requested_path:
-                paths = list(glob(str(Path(requested_path).resolve())))
-                if len(paths) == 0:
-                    raise ValueError(f'No rasters found on path {requested_path}')
-                for path in paths:
-                    yield path, request
-                        
-            else:
-                yield requested_path, request
+ 
                 
     def _expand_feature_request_path(self, request: Dict) -> Generator:
         request = request.copy()
@@ -184,7 +157,7 @@ class HfunConfigParser(UserDict):
         tasks = []
         if self.slurm is None:
             return tasks
-        for path, hfun_opts in self.iter_raster_requests():
+        for path, hfun_opts in iter_raster_requests(self):
             tasks.append(asyncio.get_event_loop().create_task(self._await_hfun_raster_request(path, hfun_opts, output_directory)))
         for path, hfun_opts in self.iter_feature_requests():
               tasks.append(asyncio.get_event_loop().create_task(self._await_hfun_feature_request(path, hfun_opts, output_directory)))
@@ -273,19 +246,17 @@ class HfunConfigParser(UserDict):
         # append_raster_cmd_opts(cmd, hfun_opts)
 
         return cmd
-
-    # TODO: !!!!! repeated code!
-    def iter_raster_requests(self):
-        for request in self.get('rasters', []):
-            if 'path' in request:
-                logger.info(f'Requested raster is a local path: {request["path"]}')
-                for raster in self._expand_raster_request_path(request):
-                    yield raster
-            elif 'tile_index' in request:
-                for raster in expand_tile_index(self, request):
-                    yield raster
-            else:
-                raise TypeError(f'Unhandled type: {request}')
+    # def iter_raster_requests(self):
+    #     for request in self.get('rasters', []):
+    #         if 'path' in request:
+    #             logger.info(f'Requested raster is a local path: {request["path"]}')
+    #             for raster in self._expand_raster_request_path(request):
+    #                 yield raster
+    #         elif 'tile_index' in request:
+    #             for raster in expand_tile_index(self, request):
+    #                 yield raster
+    #         else:
+    #             raise TypeError(f'Unhandled type: {request}')
 
     def _get_mesh_request_cmd(self, path, hfun_opts, output_filename):
         cmd = []
@@ -329,22 +300,22 @@ class HfunConfigParser(UserDict):
             else:
                 raise TypeError(f'Unhandled type: {request}')
 
-    def _expand_raster_request_path(self, request: Dict) -> Generator:
-        request = request.copy()
-        requested_paths = request.pop("path")
-        if isinstance(requested_paths, str):
-            requested_paths = [requested_paths]
-        for requested_path in list(requested_paths):
-            requested_path = os.path.expandvars(requested_path)
-            if '*' in requested_path:
-                paths = list(glob(str(Path(requested_path).resolve())))
-                if len(paths) == 0:
-                    raise ValueError(f'No rasters found on path {requested_path}')
-                for path in paths:
-                    yield path, request
+    # def _expand_raster_request_path(self, request: Dict) -> Generator:
+    #     request = request.copy()
+    #     requested_paths = request.pop("path")
+    #     if isinstance(requested_paths, str):
+    #         requested_paths = [requested_paths]
+    #     for requested_path in list(requested_paths):
+    #         requested_path = os.path.expandvars(requested_path)
+    #         if '*' in requested_path:
+    #             paths = list(glob(str(Path(requested_path).resolve())))
+    #             if len(paths) == 0:
+    #                 raise ValueError(f'No rasters found on path {requested_path}')
+    #             for path in paths:
+    #                 yield path, request
                         
-            else:
-                yield requested_path, request
+    #         else:
+    #             yield requested_path, request
 
     @cached_property
     def slurm(self) -> Union[SlurmConfig, None]:
@@ -369,6 +340,23 @@ class HfunConfigParser(UserDict):
                 yield requested_path, request
 
 
+class MeshConfigParser(UserDict):
+    
+    @cached_property
+    def interpolate(self):
+        interp_opts = self.get('interpolate')
+        if interp_opts is None:
+            return
+        if not isinstance(interp_opts, list):
+            raise ValueError('Config key `mesh.interpolate` must be a list.')
+        return interp_opts
+        
+    @cached_property
+    def slurm(self) -> Union[SlurmConfig, None]:
+        if 'slurm' in self:
+            return SlurmConfig(self['slurm'])
+        
+
 class ConfigParser(UserDict):
   
     @cached_property
@@ -387,6 +375,14 @@ class ConfigParser(UserDict):
             hfun.config = self
             return hfun
         
+    @cached_property
+    def mesh(self):
+        if 'mesh' in self:
+            mesh = MeshConfigParser(self['mesh'])
+            mesh._await_pexpect = self._await_pexpect
+            mesh.config = self
+            return mesh
+
     @cached_property
     def root_directory(self):
         root = Path(self['root_directory'])

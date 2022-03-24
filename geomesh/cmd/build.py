@@ -63,15 +63,17 @@ class BuildCli:
         else:
             if len(hfun_result) > 0:
                 hfun = self.finalize_hfun(hfun_result)
-        geom.make_plot(show=True)
+        # geom.make_plot(show=True)
         driver = JigsawDriver(
             geom=geom,
             hfun=hfun,
             verbosity=1
         )
         mesh = driver.output_mesh
-        mesh.triplot(show=True)
-        raise NotImplementedError('Driver is ready, save mesh now.')
+        values = asyncio.get_event_loop().run_until_complete(asyncio.gather(self._get_interpolation(mesh)))[0]
+        mesh.values[:] = values
+        # values = await self._get_mesh_interpolation(mesh)
+        
 
     async def srun_geom_combine(self, filepaths):
         # first step is to geom-eat; should probably return a new filepaths_original
@@ -169,31 +171,15 @@ class BuildCli:
             cmd.append(f'--nprocs={nprocs}')
             await self.config._await_pexpect(cmd)
 
-        # should return geom diff gdf
+    # async def _get_interpolation(self, mesh):
 
-
-        # len_geoms = len(gdf) 
-        # data = []
-        # geoms = [geom.geometry for geom in gdf.itertuples()]       
-        # for i in range(len_geoms):
-        #     if isinstance(geoms[i], Polygon):
-        #         geoms[i] = MultiPolygon([geoms[i]])
-        #     data.append({
-        #         'geometry': geoms[i],
-        #         })
-        #     for j in range(i+1, len_geoms):
-        #         geoms[j] = geoms[j].difference(geoms[i])
-
-        # gdf = gpd.GeoDataFrame(data, crs=gdf.crs)
-        # gdf.plot(facecolor='none', cmap='jet')
-        # import matplotlib.pyplot as plt
-        # plt.show()
-
-
-
-
+    #     if self.config.mesh.interpolate is None:
+    #         return
+        
+    #     for raster in self.config.mesh.interpolate:
             
-        return 
+            
 
-    # async def _combine_geom_group(self, neighbor_group):
-
+        # iterp_opts = 
+        
+        
