@@ -55,9 +55,12 @@ class RasterAction(argparse.Action):
         if 'clip' in args.raster_opts:
             raster.clip(args.raster_opts['clip'])
         if 'resample' in args.raster_opts:
-            resample = args.raster_opts['resample']
-            if not isinstance(resample, dict):
-                raise ValueError('resample argument must be a dict with req key sacling_factor ')
+            if isinstance(args.raster_opts['resample'], float):
+                args.raster_opts['resample'] = {
+                    'scaling_factor': args.raster_opts['resample']
+                }
+            if not isinstance(args.raster_opts['resample'], dict):
+                raise ValueError('resample argument must be a dict with req key scaling_factor ')
             raster.resample(
                 args.raster_opts['resample']['scaling_factor'],
                 resampling_method=args.raster_opts['resample'].get('resampling_method')

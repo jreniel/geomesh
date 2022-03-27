@@ -1,5 +1,5 @@
 from collections import defaultdict
-from functools import lru_cache
+from functools import lru_cache, cached_property
 from itertools import permutations
 from multiprocessing import Pool, cpu_count
 import os
@@ -22,13 +22,15 @@ import numpy as np
 from pyproj import CRS, Transformer
 import requests
 from scipy.interpolate import RectBivariateSpline, griddata
-from shapely.geometry import Polygon, LineString, LinearRing, MultiPolygon, box
+from shapely.geometry import Polygon, LineString, LinearRing, MultiPolygon, box, Point
 
 from geomesh import utils
 from geomesh.figures import figure, get_topobathy_kwargs
 from geomesh.raster import Raster
 from geomesh.mesh.base import BaseMesh
 from geomesh.mesh.parsers import grd, sms2dm
+
+from .boundaries import Boundaries
 
 
 class Rings:
@@ -61,6 +63,17 @@ class Rings:
 
     def interior(self):
         return self().loc[self()["type"] == "interior"]
+    
+    @lru_cache(maxsize=1)
+    def sorted(self):
+        tri = self.mesh.elements.triangulation()
+        idxs = np.vstack(list(np.where(tri.neighbors == -1))).T
+        boundary_edges = []
+        for i, j in idxs:
+            boundary_edges.append((tri.triangles[i, j], tri.triangles[i, (j + 1) % 3]))
+        return sort_rings(edges_to_rings(boundary_edges), self.mesh.coord)
+
+
 
 
 class Edges:
@@ -214,6 +227,21 @@ class Nodes:
             append(self.mesh.elements.quads())
             self._indexes_around_index = indexes_around_index
         return list(self._indexes_around_index[index])
+    
+    @property
+    def gdf(self):
+        if not hasattr(self, '_gdf'):
+            data = []
+            for i, (coord, value) in self().items():
+                data.append({
+                    'id': i,
+                    'geometry': Point(coord),
+                    'value': value,
+                })
+                
+            self._gdf = gpd.GeoDataFrame(data, crs=self.mesh.crs)
+        return self._gdf
+        
 
 
 class Elements:
@@ -321,15 +349,29 @@ class EuclideanMesh(BaseMesh):
         self,
         path: Union[str, os.PathLike],
         overwrite: bool = False,
-        format="grd",
+        format=None,
     ):
         path = pathlib.Path(path)
+        fname = path.name
+        if format is None:
+            if fname.endswith('grd'):
+                format = 'grd'
+            if fname.endswith('gr3'):
+                format = 'grd'
+            if fname.endswith('2dm'):
+                format = '2dm'
+            if fname.endswith('msh'):
+                format = 'msh'
+            if fname.endswith('vtk'):
+                format = 'vtk'
+        else:
+            format = 'grd'
         if path.exists() and overwrite is not True:
             raise IOError(f"File {str(path)} exists and overwrite is not True.")
         if format == "grd":
             grd_dict = utils.msh_t_to_grd(self.msh_t)
-            if hasattr(self, "_boundaries") and self._boundaries.data:
-                grd_dict.update(boundaries=self._boundaries.data)
+            # if hasattr(self, "_boundaries") and self._boundaries.data:
+            grd_dict.update(boundaries=self.boundaries.data)
             grd.write(grd_dict, path, overwrite)
 
         elif format == "2dm":
@@ -419,11 +461,9 @@ class EuclideanMesh2D(EuclideanMesh):
             raise Exception(f'Unhandled return_type={return_type}.')
 
 
-    # @property
-    # def boundaries(self):
-    #     if not hasattr(self, "_boundaries"):
-    #         self._boundaries = Boundaries(self)
-    #     return self._boundaries
+    @cached_property
+    def boundaries(self):
+        return Boundaries(self)
 
     @figure
     def make_plot(
@@ -544,6 +584,18 @@ class EuclideanMesh2D(EuclideanMesh):
     def bbox(self):
         return self.get_bbox()
 
+    @staticmethod
+    def edges_to_rings(edges):
+        return edges_to_rings(edges)
+
+    @staticmethod
+    def sort_rings(index_rings, vertices):
+        return sort_rings(index_rings, vertices)
+
+    @staticmethod
+    def signed_polygon_area(vertices):
+        return signed_polygon_area(vertices)
+
 
 class Mesh(BaseMesh):
     """Mesh factory"""
@@ -613,6 +665,8 @@ def edges_to_rings(edges):
     # start ordering the edges into linestrings
     edge_collection = list()
     ordered_edges = [edges.pop(-1)]
+    if len(edges) == 0:
+        return [tuple(ordered_edges)]
     e0, e1 = [list(t) for t in zip(*edges)]
     while len(edges) > 0:
         if ordered_edges[-1][1] in e0:
@@ -716,6 +770,83 @@ def signed_polygon_area(vertices):
         area += vertices[i][0] * vertices[j][1]
         area -= vertices[j][0] * vertices[i][1]
         return area / 2.0
+
+
+# def sort_rings(index_rings, vertices):
+#     """Sorts a list of index-rings.
+
+#     Takes a list of unsorted index rings and sorts them into an "exterior" and
+#     "interior" components. Any doubly-nested rings are considered exterior
+#     rings.
+
+#     TODO: Refactor and optimize. Calls that use :class:matplotlib.path.Path can
+#     probably be optimized using shapely.
+#     """
+
+#     # sort index_rings into corresponding "polygons"
+#     areas = list()
+#     for index_ring in index_rings:
+#         e0, e1 = [list(t) for t in zip(*index_ring)]
+#         areas.append(float(Polygon(vertices[e0, :]).area))
+
+#     # maximum area must be main mesh
+#     idx = areas.index(np.max(areas))
+#     exterior = index_rings.pop(idx)
+#     areas.pop(idx)
+#     _id = 0
+#     _index_rings = dict()
+#     _index_rings[_id] = {"exterior": np.asarray(exterior), "interiors": []}
+#     e0, e1 = [list(t) for t in zip(*exterior)]
+#     path = Path(vertices[e0 + [e0[0]], :], closed=True)
+#     while len(index_rings) > 0:
+#         # find all internal rings
+#         potential_interiors = list()
+#         for i, index_ring in enumerate(index_rings):
+#             e0, e1 = [list(t) for t in zip(*index_ring)]
+#             if path.contains_point(vertices[e0[0], :]):
+#                 potential_interiors.append(i)
+#         # filter out nested rings
+#         real_interiors = list()
+#         for i, p_interior in reversed(list(enumerate(potential_interiors))):
+#             _p_interior = index_rings[p_interior]
+#             check = [
+#                 index_rings[k]
+#                 for j, k in reversed(list(enumerate(potential_interiors)))
+#                 if i != j
+#             ]
+#             has_parent = False
+#             for _path in check:
+#                 e0, e1 = [list(t) for t in zip(*_path)]
+#                 _path = Path(vertices[e0 + [e0[0]], :], closed=True)
+#                 if _path.contains_point(vertices[_p_interior[0][0], :]):
+#                     has_parent = True
+#             if not has_parent:
+#                 real_interiors.append(p_interior)
+#         # pop real rings from collection
+#         for i in reversed(sorted(real_interiors)):
+#             _index_rings[_id]["interiors"].append(np.asarray(index_rings.pop(i)))
+#             areas.pop(i)
+#         # if no internal rings found, initialize next polygon
+#         if len(index_rings) > 0:
+#             idx = areas.index(np.max(areas))
+#             exterior = index_rings.pop(idx)
+#             areas.pop(idx)
+#             _id += 1
+#             _index_rings[_id] = {"exterior": np.asarray(exterior), "interiors": []}
+#             e0, e1 = [list(t) for t in zip(*exterior)]
+#             path = Path(vertices[e0 + [e0[0]], :], closed=True)
+#     return _index_rings
+
+
+# def signed_polygon_area(vertices):
+#     # https://code.activestate.com/recipes/578047-area-of-polygon-using-shoelace-formula/
+#     n = len(vertices)  # of vertices
+#     area = 0.0
+#     for i in range(n):
+#         j = (i + 1) % n
+#         area += vertices[i][0] * vertices[j][1]
+#         area -= vertices[j][0] * vertices[i][1]
+#         return area / 2.0
 
 
 def _mesh_interpolate_worker(coords, coords_crs, raster_path, chunk_size):

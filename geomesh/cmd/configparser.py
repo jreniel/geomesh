@@ -347,14 +347,41 @@ class MeshConfigParser(UserDict):
         interp_opts = self.get('interpolate')
         if interp_opts is None:
             return
-        if not isinstance(interp_opts, list):
-            raise ValueError('Config key `mesh.interpolate` must be a list.')
+
+        if not isinstance(interp_opts, dict):
+            raise ValueError('Config key `mesh.interpolate` with possible keys '
+                             '`rasters`, `las`.')
+
+        if 'las' in interp_opts:
+            raise NotImplementedError('las interpolation')
+        
         return interp_opts
+    
+    
+    @cached_property
+    def boundaries(self):
+        bound_opts = self.get('boundaries')
+        if bound_opts is None:
+            return
+        return bound_opts
+        
+    @cached_property
+    def outputs(self):
+        outputs_opts = self.get('outputs')
+        if outputs_opts is None:
+            return
+        return outputs_opts
+
+    def get_raster_interpolate_requests(self):
+        for raster_request in iter_raster_requests(self.get('interpolate', [])):
+            yield raster_request
         
     @cached_property
     def slurm(self) -> Union[SlurmConfig, None]:
         if 'slurm' in self:
             return SlurmConfig(self['slurm'])
+        
+
         
 
 class ConfigParser(UserDict):

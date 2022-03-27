@@ -3,10 +3,12 @@ import pickle
 from pathlib import Path
 import os
 import sys
+import tempfile
 
 
 # import dask_geopandas
 import geopandas as gpd
+from jigsawpy import jigsaw_msh_t
 import pandas as pd
 from shapely.geometry import Polygon, MultiPolygon
 
@@ -15,13 +17,21 @@ from geomesh.geom.shapely import MultiPolygonGeom
 from geomesh.hfun.mesh import MeshHfun
 
 from .configparser import ConfigParser
+from .raster_opts import append_cmd_opts as append_raster_cmd_opts
 
 class BuildCli:
 
     def __init__(self, yml_path: os.PathLike):
         self.config = ConfigParser.from_yml(yml_path)
+        # self.yaml_path = yml_path
 
     def main(self):
+        
+        # preliminary checks to avoid errors after execution
+        if self.config.mesh.boundaries is not None:
+            if self.config.mesh.interpolate is None:
+                raise ValueError('need to interpolate in order to obtain boundaries')
+        
         geom_tasks = []
         hfun_tasks = []
         geom_result = []
@@ -65,14 +75,41 @@ class BuildCli:
                 hfun = self.finalize_hfun(hfun_result)
         # geom.make_plot(show=True)
         # hfun.tricontourf(levels=256, show=True)
+        # TODO: This part needs to be sent to srun when applicable (it may require significant RAM)
         driver = JigsawDriver(
             geom=geom,
             hfun=hfun,
             verbosity=1
         )
         mesh = driver.output_mesh
-        values = asyncio.get_event_loop().run_until_complete(asyncio.gather(self._get_interpolation(mesh)))[0]
-        mesh.values[:] = values
+        if self.config.mesh.interpolate is not None:
+            self.interpolate_mesh(mesh)
+        
+        
+        
+        # with open('tmpmesh.pkl', 'wb') as fh:
+        #     pickle.dump(mesh, fh)
+        
+        # exit()
+                
+        # with open('tmpmesh.pkl', 'rb') as fh:
+        #     mesh = pickle.load(fh)
+            
+        from geomesh import utils
+        utils.finalize_mesh(mesh.msh_t)
+        if self.config.mesh.boundaries is not None:
+            self.build_boundaries(mesh)
+            # mesh.boundaries.open.plot(facecolor='none')
+            # ax = mesh.boundaries.gdf.plot('ibtype', facecolor='none')
+            # mesh.boundaries.open.plot(ax=ax, facecolor='none')
+            # mesh.nodes.gdf.loc[mesh.nodes.gdf['id'] == 3809].plot(ax=ax)
+            # mesh.nodes.gdf[mesh.nodes.gdf.loc['id'==3809]].plot(ax=ax)
+            # import matplotlib.pyplot as plt
+            # plt.show()
+        if self.config.mesh.outputs is not None:
+            self.process_outputs(mesh)
+        # mesh.write('output.2dm', overwrite=True)
+        # mesh.values[:] = values
         # values = await self._get_mesh_interpolation(mesh)
         
 
@@ -173,15 +210,82 @@ class BuildCli:
             cmd.append(f'--nprocs={nprocs}')
             await self.config._await_pexpect(cmd)
 
-    # async def _get_interpolation(self, mesh):
+    def interpolate_mesh(self, mesh):
+        # print('getting interp?')
+        # if self.config.mesh.interpolate is None:
+        #     print('its none?')
+        #     return
+        # print('will iterate?')
+        mesh_pkl_path = self.config.cache_directory / 'mesh.pkl'
+        with open(mesh_pkl_path, 'wb') as f:
+            pickle.dump(mesh, f)
+        tasks = []
+        for raster_path, raster_request in self.config.mesh.get_raster_interpolate_requests():
+            tasks.append(
+                asyncio.get_event_loop().create_task(
+                    self._raster_to_mesh_interp(
+                        mesh_pkl_path,
+                        raster_path,
+                        raster_request
+                    )
+                )
+            )
+        results = asyncio.get_event_loop().run_until_complete(asyncio.gather(*tasks))
+        mesh_pkl_path.unlink()
+        values = np.full(mesh.values.flatten().shape, np.nan)
+        for result in results:
+            values[result.indexes] = result.values
+        mesh.msh_t.value = np.array(
+            values.reshape((values.shape[0], 1)), dtype=jigsaw_msh_t.REALS_t
+        )
 
-    #     if self.config.mesh.interpolate is None:
-    #         return
+    async def _raster_to_mesh_interp(self, mesh_pkl_path, raster_path, raster_request):
+        out_pkl_path = self.config.cache_directory / f'{Path(tempfile.NamedTemporaryFile().name).name}.pkl'
+        # print(self.config.cache_directory.resolve())
+        # breakpoint()
+        # print(out_pkl_path)
+        # exit()
+        cmd = []
+        if getattr(self.config.mesh, 'slurm', None) is not None:
+            cmd.extend([
+                f'srun',
+                f'-c1',
+            ])
+        cmd.extend([
+                f'{sys.executable}',
+                f'{Path(__file__).parent.resolve() / "distributed_raster_to_mesh_interp.py"}',
+            ])
+        cmd.append(f'{Path(raster_path).resolve()}')
+        append_raster_cmd_opts(cmd, raster_request)
+        cmd.append(f'{mesh_pkl_path.resolve()}')
+        cmd.append(f'-o={out_pkl_path.resolve()}')
+        # print(' '.join(cmd))
+        await self.config._await_pexpect(cmd)
+        # # breakpoint()
+        # await self.config._await_pexpect(cmd)
+        with open(out_pkl_path, 'rb') as fh:
+            return pickle.load(fh)
         
-    #     for raster in self.config.mesh.interpolate:
-            
+    def build_boundaries(self, mesh):
+        bound_opts = self.config.mesh.boundaries
+        if bound_opts is True:
+            mesh.boundaries.auto_generate()
+        elif isinstance(bound_opts, dict):
+            mesh.boundaries.auto_generate(**bound_opts)
+        else:
+            raise ValueError(f'Unhandled bound_opts: {bound_opts}')
+        
+        
+    def process_outputs(self, mesh):
+        for output_request in self.config.mesh.outputs:
+            mesh.write(**output_request)
             
 
-        # iterp_opts = 
-        
-        
+import numpy as np
+ 
+class RasterToMeshInterpResult:
+    raster_path: Path
+    raster_opts: dict
+    pkl_mesh_path: Path
+    values: np.ndarray
+    indexes: np.ndarray

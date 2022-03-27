@@ -112,8 +112,8 @@ def finalize_mesh(mesh, sieve_area=None):
     while needs_sieve(mesh) or has_pinched_nodes(mesh):
         cleanup_pinched_nodes(mesh)
         sieve(mesh, sieve_area)
-        
-    # cleanup_isolates(mesh)
+        # finalize_mesh(mesh, sieve_area)
+    cleanup_isolates(mesh)
     put_IDtags(mesh)
 
 
@@ -407,6 +407,9 @@ def has_pinched_nodes(mesh):
     for inner_rings in _inner_ring_collection.values():
         for ring in inner_rings:
             all_nodes.extend(np.asarray(ring)[:, 0].tolist())
+    _outer_ring_collection = outer_ring_collection(mesh)
+    for outer_ring in _outer_ring_collection.values():
+        all_nodes.extend(np.asarray(outer_ring)[:, 0].tolist())
     u, c = np.unique(all_nodes, return_counts=True)
     if len(u[c > 1]) > 0:
         return True
@@ -420,6 +423,9 @@ def cleanup_pinched_nodes(mesh):
     for inner_rings in _inner_ring_collection.values():
         for ring in inner_rings:
             all_nodes.extend(np.asarray(ring)[:, 0].tolist())
+    _outer_ring_collection = outer_ring_collection(mesh)
+    for outer_ring in _outer_ring_collection.values():
+        all_nodes.extend(np.asarray(outer_ring)[:, 0].tolist())
     u, c = np.unique(all_nodes, return_counts=True)
     mesh.tria3 = mesh.tria3.take(
         np.where(
