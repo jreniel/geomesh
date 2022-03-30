@@ -28,7 +28,7 @@ class HfunCache:
 
     def add(self, uri: str, raise_on_missing=False):
         filepath = self._cache_parent_path / uri.split('://')[-1]
-        if filepath.exists() is True and :
+        if filepath.exists() is False:
             if raise_on_missing is True:
                 raise IOError(f'{uri} already in cache.')
         else:
