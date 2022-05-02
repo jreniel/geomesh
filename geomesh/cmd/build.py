@@ -28,9 +28,10 @@ class BuildCli:
     def main(self):
         
         # preliminary checks to avoid errors after execution
-        if self.config.mesh.boundaries is not None:
-            if self.config.mesh.interpolate is None:
-                raise ValueError('need to interpolate in order to obtain boundaries')
+        if self.config.mesh is not None:
+            if self.config.mesh.boundaries is not None:
+                if self.config.mesh.interpolate is None:
+                    raise ValueError('need to interpolate in order to obtain boundaries')
         
         geom_tasks = []
         hfun_tasks = []
