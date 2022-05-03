@@ -216,6 +216,7 @@ setuptools.setup(
         "pylas",
         "lazrs",
         "pexpect",
+        "pyarrow",
     ],
     extras_require={
         "doc": doc_requires,

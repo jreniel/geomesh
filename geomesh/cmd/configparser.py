@@ -14,6 +14,7 @@ from typing import Dict, Generator, List, Union
 import geopandas as gpd
 import numpy as np
 from shapely.geometry import box
+import uuid
 import yaml
 
 from .raster_opts import append_cmd_opts as append_raster_cmd_opts, iter_raster_requests
@@ -37,6 +38,10 @@ class SlurmConfig(UserDict):
     def mem_per_cpu(self):
         return self.get('mem_per_cpu')
 
+    @cached_property
+    def max_tasks(self):
+        return MaxTasks(self.get('max_tasks'))
+
 class GeomConfigParser(UserDict):
 
     @cached_property
@@ -53,19 +58,27 @@ class GeomConfigParser(UserDict):
             return tasks
         for path, geom_opts in iter_raster_requests(self):
             # TODO !!!!! Limit number of concurrent jobs with --dependency=singleton, --job-name=XXX
-            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_raster_request(path, geom_opts, output_directory)))
+            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_raster_request(path, geom_opts, output_directory, self.slurm.max_tasks.next())))
         for path, geom_opts in self.iter_feature_requests():
-            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_feature_request(path, geom_opts, output_directory)))
+            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_feature_request(path, geom_opts, output_directory, self.slurm.max_tasks.next())))
         return tasks
     
-    async def _await_geom_raster_request(self, path, geom_opts, output_directory):
+    async def _await_geom_raster_request(self, path, geom_opts, output_directory, job_name=None):
         output_filename = output_directory / f'{Path(path).name}.feather'
-        await self._await_pexpect(self.get_raster_request_cmd(path, geom_opts, output_filename))   
+        cmd = self.get_raster_request_cmd(path, geom_opts, output_filename)
+        if job_name is not None:
+            cmd.insert(2, f'--job-name={job_name}')
+            cmd.insert(3, '--dependency=singleton')
+        await self._await_pexpect(cmd)   
         return output_filename
 
-    async def _await_geom_feature_request(self, path, geom_opts, output_directory):
+    async def _await_geom_feature_request(self, path, geom_opts, output_directory, job_name=None):
         output_filename = output_directory / f'{Path(path).name}.feather'
-        await self._await_pexpect(self.get_feature_request_cmd(path, geom_opts, output_filename))   
+        cmd = self.get_feature_request_cmd(path, geom_opts, output_filename)
+        if job_name is not None:
+            cmd.insert(2, f'--job-name={job_name}')
+            cmd.insert(3, '--dependency=singleton')
+        await self._await_pexpect(cmd)   
         return output_filename
 
     def get_raster_request_cmd(self, path, geom_opts, output_filename)->List[str]:
@@ -443,3 +456,30 @@ class ConfigParser(UserDict):
         if p.exitstatus != 0:
             raise Exception(p.before)
 
+class MaxTasks:
+
+    def __init__(self, max_tasks=None):
+        self._cnt = 0
+        if max_tasks is None:
+            self.names = [None]
+            return
+        assert isinstance(max_tasks, int), 'max_tasks must be an int>0 or None'
+        assert max_tasks>0, 'max_tasks must be an int>0 or None'
+        self._max_tasks = max_tasks
+        self.names = [uuid.uuid4().hex for i in range(max_tasks)]
+
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        next_value = self.names[self._cnt]
+        if next_value is None:
+            return
+        self._cnt += 1
+        if self._cnt == self._max_tasks:
+            self._cnt = 0
+        return next_value
+
+    def next(self):
+        return next(self)

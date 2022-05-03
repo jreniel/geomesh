@@ -94,7 +94,7 @@ class Boundaries:
         threshold=0.,
         land_ibtype=0,
         interior_ibtype=1,
-        min_open_bound_length=2,
+        min_open_bound_length=4,
     ):
         self.open = None
         self.land = None

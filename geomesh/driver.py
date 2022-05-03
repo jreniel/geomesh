@@ -94,7 +94,8 @@ class JigsawDriver:
 
         logger.info('Launching libsaw.jigsaw...')
         libsaw.jigsaw(self.opts, geom, output_mesh, hfun=hfun)
-        print('WARNING: Mesh cleanup is missing.')
+        logger.info('Finalizing mesh...')
+        utils.finalize_mesh(output_mesh)
         if local_azimuthal_projection is not None:
             output_mesh.crs = local_crs
             utils.reproject(output_mesh, self.dst_crs)

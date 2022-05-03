@@ -96,8 +96,8 @@ class BuildCli:
         # with open('tmpmesh.pkl', 'rb') as fh:
         #     mesh = pickle.load(fh)
             
-        from geomesh import utils
-        utils.finalize_mesh(mesh.msh_t)
+        # from geomesh import utils
+        # utils.finalize_mesh(mesh.msh_t)
         if self.config.mesh.boundaries is not None:
             self.build_boundaries(mesh)
             # mesh.boundaries.open.plot(facecolor='none')

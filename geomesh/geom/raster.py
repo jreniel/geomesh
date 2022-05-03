@@ -134,7 +134,6 @@ class RasterGeom(BaseGeom):
 
         # return union_result
 
-
     @staticmethod
     def _build_multipolygon_from_window(x, y, z, zmin, zmax, src_crs, dst_crs):
 
@@ -150,12 +149,12 @@ class RasterGeom(BaseGeom):
 
         else:
             plt.ioff()
-            original_backend = plt.get_backend()
-            plt.switch_backend('agg')
+            # original_backend = plt.get_backend()
+            # plt.switch_backend('agg')
             fig, ax = plt.subplots()
             multipolygon = get_multipolygon_from_axes(ax.contourf(x, y, z, levels=[zmin, zmax]))
             plt.close(fig)
-            plt.switch_backend(original_backend)
+            # plt.switch_backend(original_backend)
             plt.ion()
 
         if dst_crs is not None:
