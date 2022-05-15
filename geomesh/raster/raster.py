@@ -752,17 +752,29 @@ class Raster:
     @overlap.setter
     def overlap(self, overlap: Union[int, None]):
         self._overlap = overlap
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
 import math
 def get_iter_windows(
         width,
         height,
         chunk_size=0,
         overlap=0,
+<<<<<<< Updated upstream
         row_off=0,
         col_off=0
 ):
     win_h = chunk_size + overlap
     win_w = chunk_size + overlap
+=======
+        # row_off=0,
+        # col_off=0
+):
+    # win_h = chunk_size + overlap
+    # win_w = chunk_size + overlap
+>>>>>>> Stashed changes
     n_win_h = math.ceil(height / chunk_size)
     n_win_w = math.ceil(width / chunk_size)
     for i in range(n_win_h):
@@ -774,6 +786,7 @@ def get_iter_windows(
             w = chunk_size + overlap
             w = w - (off_w + w) % width if off_w + w > width else w
             yield windows.Window(off_w, off_h, w, h)
+<<<<<<< Updated upstream
 
 
 # def get_iter_windows(
@@ -813,6 +826,8 @@ def get_iter_windows(
 #                     o -= 1
 #                 h += o
 #                 yield windows.Window(j, i, w, h)
+=======
+>>>>>>> Stashed changes
 
 
 # def get_multipolygon_from_axes(ax):

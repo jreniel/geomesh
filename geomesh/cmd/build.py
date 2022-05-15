@@ -1,14 +1,15 @@
 import asyncio
+import logging
 import pickle
 from pathlib import Path
 import os
 import sys
 import tempfile
 
-
 # import dask_geopandas
 import geopandas as gpd
 from jigsawpy import jigsaw_msh_t
+import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon, MultiPolygon
 
@@ -18,6 +19,9 @@ from geomesh.hfun.mesh import MeshHfun
 
 from .configparser import ConfigParser
 from .raster_opts import append_cmd_opts as append_raster_cmd_opts
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class BuildCli:
 
@@ -116,12 +120,20 @@ class BuildCli:
 
     async def srun_geom_combine(self, filepaths):
         # first step is to geom-eat; should probably return a new filepaths_original
-        
-        await self._generate_geom_difference(filepaths)
+        outpaths = await self._generate_geom_difference(filepaths)
         gdfs = []
-        for fpath in filepaths:
+        for fpath in outpaths:
             gdfs.append(gpd.read_feather(fpath))
-        gdf = pd.concat(gdfs)
+        gdf = pd.concat(gdfs, ignore_index=True)
+        print('saving gdf for testing')
+        gdf.to_file(self.config.root_directory / 'all_geoms_diffs.gpkg', driver='GPKG', layer='all_geoms')
+        print('start unary_union')
+        exit()
+        mp = gdf.unary_union
+        if isinstance(mp, Polygon):
+            mp = MultiPolygon([mp])
+        return MultiPolygonGeom(mp, crs=gdf.crs)
+        
         # gdf.plot(facecolor='none')
         # import matplotlib.pyplot as plt
         # plt.show()
@@ -162,10 +174,7 @@ class BuildCli:
                     # raise NotImplementedError
         # gdf_diff = self._generate_geom_difference(gdf)
         # mp = gdf.iloc[0].geometry
-        mp = gdf.unary_union
-        if isinstance(mp, Polygon):
-            mp = MultiPolygon([mp])
-        return MultiPolygonGeom(mp, crs=gdf.crs)
+
 
     async def srun_hfun_combine(self, filepaths_to_combine):
         out_pkl_path = self.config.cache_directory / 'hfun_combined.pkl'
@@ -191,25 +200,64 @@ class BuildCli:
         await self.config._await_pexpect(cmd)
         with open(out_pkl_path, 'rb') as fh:
             return MeshHfun(pickle.load(fh))
+        
+    async def _await_geom_difference(self, fname, others, job_name=None):
+        cmd = [
+            'srun',
+            f'-c{self.config.geom.slurm.cpus_per_task}'
+        ]
+        if self.config.geom.slurm.time is not None:
+            cmd.append(f'--time={self.config.geom.slurm.time}')
+        cmd.extend([
+            f'{sys.executable}',
+            f'{Path(__file__).parent.resolve() / "feather_geom_diff_filter.py"}',
+            f'{fname.resolve()}',
+        ])
+        cmd.extend([f'{other.resolve()}' for other in others])
+        cmd.append(f'--nprocs={self.config.geom.slurm.cpus_per_task}')
+        outdir = fname.parent.parent / 'geom_diff'
+        outdir.mkdir(exist_ok=True)
+        outfile = outdir / fname.name
+        cmd.append(f'-o={outfile}')
+        if job_name is not None:
+            cmd.insert(2, f'--job-name={job_name[0]}')
+            cmd.insert(3, '--dependency=singleton')
+            cmd.insert(4, f'--nodelist={job_name[1]}')
+        await self.config._await_pexpect(cmd)
+        return outfile            
 
     async def _generate_geom_difference(self, filepaths):
-        for i in range(len(filepaths)):
-            cmd = []
-            if getattr(self.config.geom, 'slurm', None) is not None:
-                nprocs = self.config.geom.slurm.cpus_per_task
-                cmd.extend([
-                    f'srun',
-                    f'-c{nprocs}',
-                ])
-            else:
-                nprocs = self.config.geom.nprocs
-            cmd.extend([
-                    f'{sys.executable}',
-                    f'{Path(__file__).parent.resolve() / "feather_geom_diff_filter.py"}',
-                ])
-            cmd.extend([f'{fpath.resolve()}' for fpath in filepaths[i:]])
-            cmd.append(f'--nprocs={nprocs}')
-            await self.config._await_pexpect(cmd)
+        logger.info('Generating geom differences')
+        reversed_filenames = list(reversed(list(enumerate(filepaths))))
+        tasks = []
+        for i, fname in reversed_filenames:
+            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_difference(fname, filepaths[:i], self.config.geom.slurm.max_tasks_per_node.next())))
+        return await asyncio.gather(*tasks)
+        # filepaths = list(reversed(filepaths))
+        # for i in range(len(filepaths)):
+        #     cmd = []
+        #     if getattr(self.config.geom, 'slurm', None) is not None:
+        #         nprocs = self.config.geom.slurm.cpus_per_task
+        #         cmd.extend([
+        #             f'srun',
+        #             f'-c{nprocs}',
+        #         ])
+        #     else:
+        #         nprocs = self.config.geom.nprocs
+        #     cmd.extend([
+        #             f'{sys.executable}',
+        #             f'{Path(__file__).parent.resolve() / "feather_geom_diff_filter.py"}',
+        #         ])
+        #     cmd.extend([f'{fpath.resolve()}' for fpath in filepaths[i:]])
+        #     cmd.append(f'--nprocs={nprocs}')
+        #     await self.config._await_pexpect(cmd)
+        # logger.info('Done generating geom differences.')
+        # gdfs = []
+        # for fpath in filepaths:
+        #     gdfs.append(gpd.read_feather(fpath))
+        # pd.concat(gdfs).to_file(self.config.root_directory / 'all_geoms.gpkg', driver='GPKG', layer='all_geoms')
+        
+        
 
     def interpolate_mesh(self, mesh):
         # print('getting interp?')
@@ -280,10 +328,7 @@ class BuildCli:
     def process_outputs(self, mesh):
         for output_request in self.config.mesh.outputs:
             mesh.write(**output_request)
-            
 
-import numpy as np
- 
 class RasterToMeshInterpResult:
     raster_path: Path
     raster_opts: dict

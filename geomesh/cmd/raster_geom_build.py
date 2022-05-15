@@ -41,6 +41,7 @@ def main():
         dst_crs = args.dst_crs
     else:
         dst_crs = geom.crs
+
     mp = geom.get_multipolygon(
             zmin=args.zmin,
             zmax=args.zmax,

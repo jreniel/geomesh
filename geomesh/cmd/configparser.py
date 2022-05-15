@@ -1,6 +1,6 @@
 import asyncio
 from collections import UserDict
-from functools import cached_property
+from functools import cache, cached_property
 from glob import glob
 import json
 import logging
@@ -39,8 +39,12 @@ class SlurmConfig(UserDict):
         return self.get('mem_per_cpu')
 
     @cached_property
-    def max_tasks(self):
-        return MaxTasks(self.get('max_tasks'))
+    def max_tasks_per_node(self):
+        return MaxTasksPerNode(self.get('max_tasks_per_node'))
+    
+    @cached_property
+    def time(self):
+        return self.get('time')
 
 class GeomConfigParser(UserDict):
 
@@ -57,37 +61,41 @@ class GeomConfigParser(UserDict):
         if self.slurm is None:
             return tasks
         for path, geom_opts in iter_raster_requests(self):
-            # TODO !!!!! Limit number of concurrent jobs with --dependency=singleton, --job-name=XXX
-            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_raster_request(path, geom_opts, output_directory, self.slurm.max_tasks.next())))
+            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_raster_request(path, geom_opts, output_directory, self.slurm.max_tasks_per_node.next())))
         for path, geom_opts in self.iter_feature_requests():
-            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_feature_request(path, geom_opts, output_directory, self.slurm.max_tasks.next())))
+            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_feature_request(path, geom_opts, output_directory, self.slurm.max_tasks_per_node.next())))
         return tasks
     
-    async def _await_geom_raster_request(self, path, geom_opts, output_directory, job_name=None):
-        output_filename = output_directory / f'{Path(path).name}.feather'
+    async def _await_geom_raster_request(self, path, geom_opts, output_directory, job_name: tuple = None):
+        output_filename = output_directory / f'{Path(path).name}_{uuid.uuid4().hex[:6]}.feather'
         cmd = self.get_raster_request_cmd(path, geom_opts, output_filename)
+        # print(cmd)
         if job_name is not None:
-            cmd.insert(2, f'--job-name={job_name}')
+            cmd.insert(2, f'--job-name={job_name[0]}')
             cmd.insert(3, '--dependency=singleton')
+            cmd.insert(4, f'--nodelist={job_name[1]}')
+            # cmd.insert(4, '--tasks-per-node=4')
         await self._await_pexpect(cmd)   
         return output_filename
 
     async def _await_geom_feature_request(self, path, geom_opts, output_directory, job_name=None):
-        output_filename = output_directory / f'{Path(path).name}.feather'
+        output_filename = output_directory / f'{Path(path).name}_{uuid.uuid4().hex[:6]}.feather'
         cmd = self.get_feature_request_cmd(path, geom_opts, output_filename)
+        # print(cmd)
         if job_name is not None:
-            cmd.insert(2, f'--job-name={job_name}')
+            cmd.insert(2, f'--job-name={job_name[0]}')
             cmd.insert(3, '--dependency=singleton')
+            cmd.insert(4, f'--nodelist={job_name[1]}')
         await self._await_pexpect(cmd)   
         return output_filename
 
     def get_raster_request_cmd(self, path, geom_opts, output_filename)->List[str]:
-        cmd = []
+        cmd = ['srun']
         if self.slurm is not None:
-            cmd.extend([
-                f'srun',
-                f'-c1',
-            ])
+            if 'nprocs' in geom_opts:
+                cmd.append(f'-c{geom_opts["nprocs"]}')
+            else:
+                cmd.append(f'-c1')
             if self.slurm.mem_per_cpu is not None:
                 cmd.append(f'--mem-per-cpu={self.slurm.mem_per_cpu}')
         cmd.extend([
@@ -104,6 +112,8 @@ class GeomConfigParser(UserDict):
         
         if 'zmax' in geom_opts:
             cmd.append(f"--zmax={geom_opts['zmax']}")
+        if 'nprocs' in geom_opts:
+            cmd.append(f'--nprocs={geom_opts["nprocs"]}')
         append_raster_cmd_opts(cmd, geom_opts)
         # print(' '.join(cmd))
         # exit()
@@ -174,16 +184,16 @@ class HfunConfigParser(UserDict):
         for path, hfun_opts in iter_raster_requests(self):
             tasks.append(asyncio.get_event_loop().create_task(self._await_hfun_raster_request(path, hfun_opts, output_directory)))
         for path, hfun_opts in self.iter_feature_requests():
-              tasks.append(asyncio.get_event_loop().create_task(self._await_hfun_feature_request(path, hfun_opts, output_directory)))
+            tasks.append(asyncio.get_event_loop().create_task(self._await_hfun_feature_request(path, hfun_opts, output_directory)))
         return tasks
 
     async def _await_hfun_raster_request(self, path, hfun_opts, output_directory):
-        output_filename = output_directory / f'{Path(path).name}.pkl'
+        output_filename = output_directory / f'{Path(path).name}_{uuid.uuid4().hex[:6]}.pkl'
         await self._await_pexpect(self.get_raster_request_cmd(path, hfun_opts, output_filename))   
         return output_filename
     
     async def _await_hfun_feature_request(self, path, hfun_opts, output_directory):
-        output_filename = output_directory / f'{Path(path).name}.pkl'
+        output_filename = output_directory / f'{Path(path).name}_{uuid.uuid4().hex[:6]}.pkl'
         await self._await_pexpect(self.get_feature_request_cmd(path, hfun_opts, output_filename))   
         return output_filename
 
@@ -434,6 +444,10 @@ class ConfigParser(UserDict):
     def cache_directory(self):
         self.__cache_tmpdir = tempfile.TemporaryDirectory(dir=self.root_directory)
         return Path(self.__cache_tmpdir.name)
+        # TODO: Make this a tmpdir again later, make it not a tmpdir now for debugging.
+        # self.__cache_tmpdir = self.root_directory / 'debug_geom'
+        # self.__cache_tmpdir.mkdir(exist_ok=True)
+        # return self.__cache_tmpdir
 
     @classmethod
     def from_yml(cls, path):
@@ -456,8 +470,51 @@ class ConfigParser(UserDict):
 
         if p.exitstatus != 0:
             raise Exception(p.before)
+        
+class NodeNames:
+    
+    def __init__(self):
+        with pexpect.spawn(
+                'sinfo -N',
+                encoding='utf-8',
+                timeout=None,
+                # cwd=output_directory
+        ) as p:
+            p.expect(pexpect.EOF)
+        # print(p.before.split())
+        # exit()
+        for line in p.before.split('\n'):
+            line = line.split()
+            if len(line) == 0:
+                continue
+            status = line[-1].strip('*')
+            if status not in ["STATE", "down", 'drain', "drained", "draining", "fail", "failing", "future", "maint", "perfctrs", "planned", "power_down", "power_up", "reserved", "unknown"]:
+                # print(status)
+                self.names.append(line[0])
+        # print(self.names)
+        # exit()
+        self._cnt = 0
+        
+    def __iter__(self):
+        return self
 
-class MaxTasks:
+    def next(self):
+        return next(self)
+
+    def __next__(self):
+        node_name = self.names[self._cnt]
+        if node_name is None:
+            return
+        self._cnt += 1
+        if self._cnt == len(self.names):
+            self._cnt = 0
+        return node_name
+        
+    @cached_property
+    def names(self):
+        return []
+
+class MaxTasksPerNode:
 
     def __init__(self, max_tasks=None):
         self._cnt = 0
@@ -468,19 +525,21 @@ class MaxTasks:
         assert max_tasks>0, 'max_tasks must be an int>0 or None'
         self._max_tasks = max_tasks
         self.names = [uuid.uuid4().hex for i in range(max_tasks)]
-
+        self.nodelist = NodeNames()
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        next_value = self.names[self._cnt]
-        if next_value is None:
+        job_name = self.names[self._cnt]
+        if job_name is None:
             return
         self._cnt += 1
         if self._cnt == self._max_tasks:
             self._cnt = 0
-        return next_value
+        nodename = self.nodelist.next()
+        job_name += f'_{nodename}'
+        return (job_name, nodename)
 
     def next(self):
         return next(self)

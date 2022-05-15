@@ -24,14 +24,17 @@ class RasterOptsAction(argparse.Action):
             setattr(namespace, self.dest, {})
             return
         if 'clip' in raster_opts:
-            if 'bbox' in raster_opts['clip']:
+            if isinstance(raster_opts['clip'], dict):
                 raster = self.get_raster(raster_opts.get('crs'))
-                raster_opts['clip'] = box(
-                    raster_opts['clip']['bbox'].get('xmin', np.min(raster.x)),
-                    raster_opts['clip']['bbox'].get('ymin', np.min(raster.y)),
-                    raster_opts['clip']['bbox'].get('xmax', np.max(raster.x)),
-                    raster_opts['clip']['bbox'].get('ymax', np.max(raster.y))
-                )
+                raster_opts.update({'clip':  box(
+                    raster_opts['clip'].get('xmin', np.min(raster.x)),
+                    raster_opts['clip'].get('ymin', np.min(raster.y)),
+                    raster_opts['clip'].get('xmax', np.max(raster.x)),
+                    raster_opts['clip'].get('ymax', np.max(raster.y))
+                )})
+            # elif isintance(raster_opts['clip'], s
+            else:
+                raise ValueError('clip was specified but not bbox dict was given.')
         setattr(namespace, self.dest, raster_opts)
         
     def get_raster(self, crs=None):
@@ -53,6 +56,8 @@ class RasterAction(argparse.Action):
             overlap=args.raster_opts.get('overlap', 2),
             )
         if 'clip' in args.raster_opts:
+            # print(args.raster_opts['clip'])
+            # exit()
             raster.clip(args.raster_opts['clip'])
         if 'resample' in args.raster_opts:
             if isinstance(args.raster_opts['resample'], float):
