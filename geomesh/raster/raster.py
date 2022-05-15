@@ -760,8 +760,8 @@ def get_iter_windows(
         chunk_size=0,
         overlap=0,
 ):
-    n_win_h = np.ceil(height / chunk_size)
-    n_win_w = np.ceil(width / chunk_size)
+    n_win_h = int(np.ceil(height / chunk_size))
+    n_win_w = int(np.ceil(width / chunk_size))
     for i in range(n_win_h):
         for j in range(n_win_w):
             off_h = i * chunk_size
