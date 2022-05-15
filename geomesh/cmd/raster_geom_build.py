@@ -19,12 +19,13 @@ def parse_args():
     add_raster_args(parser)
     parser.add_argument('--zmin', type=float)
     parser.add_argument('--zmax', type=float)
+    parser.add_argument('--no-unary-union', action='store_true', default=False)
     parser.add_argument('--nprocs', type=int)
     # parser.add_argument('--chunk-size', '--chunk_size', type=int)
-    parser.add_argument('--dst-crs', '--dst_crs', type=lambda x: CRS.from_user_input(x))
+    parser.add_argument('--dst-crs', '--dst_crs', type=CRS.from_user_input)
     parser.add_argument('--show', action='store_true')
-    parser.add_argument('--to-file', '--to_file', type=lambda x: Path(x))
-    parser.add_argument('--to-feather', '--to_feather', type=lambda x: Path(x))
+    parser.add_argument('--to-file', '--to_file', type=Path)
+    parser.add_argument('--to-feather', '--to_feather', type=Path)
     # parser.add_argument('--to-pickle',  type=lambda x: Path(x))
     return parser.parse_args()
 
@@ -45,25 +46,26 @@ def main():
             zmax=args.zmax,
             dst_crs=dst_crs,
             nprocs=args.nprocs,
+            unary_union=False if args.no_unary_union else True
         )
-
-    if args.to_file or args.to_feather:
-   
+    if args.no_unary_union:
+        gdf = gpd.GeoDataFrame([{'geometry': geometry} for geometry in mp], crs=dst_crs)
+    else:
         gdf = gpd.GeoDataFrame([{'geometry': mp}], crs=dst_crs)
-        if args.to_file:
-            gdf.to_file(args.to_file)
-        if args.to_feather:
-            gdf.to_feather(args.to_feather)
 
-    # if args.to_pickle:
-    #     with open(args.to_pickle, 'wb') as fh:
-    #         pickle.dump(MultiPolygonGeom(mp, crs=geom.crs), fh)
-                
+    if args.to_file:
+        gdf.to_file(args.to_file)
+    if args.to_feather:
+        gdf.to_feather(args.to_feather)
+        
     if args.show:
-        for polygon in mp.geoms:
-            plt.plot(*polygon.exterior.xy, color="k")
-            for interior in polygon.interiors:
-                plt.plot(*interior.xy, color="r")
+        if args.no_unary_union:
+            gdf.plot(facecolor='none')
+        else:
+            for polygon in mp.geoms:
+                plt.plot(*polygon.exterior.xy, color="k")
+                for interior in polygon.interiors:
+                    plt.plot(*interior.xy, color="r")
         plt.show(block=True)
 
 if __name__ == "__main__":

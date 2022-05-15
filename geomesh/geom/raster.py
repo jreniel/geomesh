@@ -39,7 +39,7 @@ class RasterGeom(BaseGeom):
         self.zmin = zmin
         self.zmax = zmax
 
-    def get_multipolygon(self, zmin: float = None, zmax: float = None, dst_crs=None, nprocs: int = None) -> MultiPolygon:  # type: ignore[override]
+    def get_multipolygon(self, zmin: float = None, zmax: float = None, dst_crs=None, nprocs: int = None, unary_union: bool = True) -> Union[MultiPolygon, List[MultiPolygon]]:  # type: ignore[override]
         """Returns the shapely.geometry.MultiPolygon object that represents
         the hull of the raster given optional zmin and zmax contraints.
         """
@@ -52,14 +52,14 @@ class RasterGeom(BaseGeom):
             return MultiPolygon([box(*self.raster.get_bbox().extents)])
 
         if nprocs is not None:
-            multipolygon = self._get_multipolygon_parallel(nprocs, zmin, zmax, dst_crs)
+            multipolygon = self._get_multipolygon_parallel(nprocs, zmin, zmax, dst_crs, unary_union)
 
         else:
-            multipolygon = self._get_multipolygon_serial(zmin, zmax, dst_crs)
+            multipolygon = self._get_multipolygon_serial(zmin, zmax, dst_crs, unary_union)
 
         return multipolygon
         
-    def _get_multipolygon_serial(self, zmin, zmax, dst_crs) -> MultiPolygon:
+    def _get_multipolygon_serial(self, zmin, zmax, dst_crs, unary_union) -> MultiPolygon:
         windows = list(self.raster.iter_windows())
         multipolygon_collection: List[MultiPolygon] = []
         for window in windows:
@@ -69,15 +69,18 @@ class RasterGeom(BaseGeom):
                 )
 
         if len(windows) > 1:
-            logger.info('Calling geopandas unary_union for serial mp generation.')
-            return gpd.GeoDataFrame(
-                [{'geometry': mp} for mp in multipolygon_collection],
-                crs=dst_crs).unary_union
+            if unary_union:
+                logger.info('Calling geopandas unary_union for serial mp generation.')
+                return gpd.GeoDataFrame(
+                    [{'geometry': mp} for mp in multipolygon_collection],
+                    crs=dst_crs).unary_union
+            else:
+                return multipolygon_collection
         else:
             return multipolygon_collection.pop()
 
 
-    def _get_multipolygon_parallel(self, nprocs, zmin, zmax, dst_crs):
+    def _get_multipolygon_parallel(self, nprocs, zmin, zmax, dst_crs, unary_union):
         job_args = []
         windows_multipolygons = []
         with Pool(processes=nprocs) as pool:
@@ -92,8 +95,6 @@ class RasterGeom(BaseGeom):
                     zmax,
                     self.crs,
                     dst_crs,
-
-
                 ])
                 if (i+1)%nprocs == 0:
                     results = pool.starmap(
@@ -115,8 +116,11 @@ class RasterGeom(BaseGeom):
                 job_args = []
         pool.join()
         if len(windows_multipolygons) > 0:
-            logger.info('Serial unary union for raster mp combine (using ops).')
-            return ops.unary_union(windows_multipolygons)
+            if unary_union:
+                logger.info('Serial unary union for raster mp combine (using ops).')
+                return ops.unary_union(windows_multipolygons)
+            else:
+                return windows_multipolygons
             # logger.info('Serial unary union for raster mp combine (using geopandas).')
             # return gpd.GeoDataFrame(
             #     [{'geometry': mp} for mp in windows_multipolygons],

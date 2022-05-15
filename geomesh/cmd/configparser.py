@@ -97,6 +97,7 @@ class GeomConfigParser(UserDict):
                 # f'--to-file={output_filename.resolve()}',
                 f'--to-feather={output_filename.resolve()}',
                 # f'--gdf-to-pickle={output_filename.resolve()}',
+                '--no-unary-union',
             ])
         if 'zmin' in geom_opts:
             cmd.append(f"--zmin={geom_opts['zmin']}")

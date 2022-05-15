@@ -480,9 +480,10 @@ class Raster:
             dest.write(out_image)
         self._tmpfile = tmpfile
 
-    def iter_windows(self, chunk_size=0, overlap=0):
-        chunk_size = self.chunk_size if chunk_size is None else chunk_size
-        overlap = self.overlap if overlap is None else overlap
+    def iter_windows(self, chunk_size=0, overlap=2):
+        chunk_size = chunk_size if self.chunk_size is None else self.chunk_size
+        overlap = overlap if self.overlap is None else overlap
+
         if chunk_size in [0, None, False]:
             yield rasterio.windows.Window(0, 0, self.width, self.height)
             return
@@ -751,8 +752,7 @@ class Raster:
     @overlap.setter
     def overlap(self, overlap: Union[int, None]):
         self._overlap = overlap
-
-
+import math
 def get_iter_windows(
         width,
         height,
@@ -760,36 +760,59 @@ def get_iter_windows(
         overlap=0,
         row_off=0,
         col_off=0
-    ):
-        h = chunk_size
-        for i in range(
-            int(row_off),
-            int(row_off + height + chunk_size),
-            chunk_size
-                ):
-            if i + h > row_off + height:
-                h = height - i
-                if h <= 0:
-                    break
-            w = chunk_size
-            for j in range(
-                int(col_off),
-                int(col_off + width + chunk_size),
-                chunk_size
-                    ):
-                if j + w > col_off + width:
-                    w = width - j
-                    if w <= 0:
-                        break
-                o = overlap
-                while j + w + o > width:
-                    o -= 1
-                w += o
-                o = overlap
-                while i + h + o > height:
-                    o -= 1
-                h += o
-                yield windows.Window(j, i, w, h)
+):
+    win_h = chunk_size + overlap
+    win_w = chunk_size + overlap
+    n_win_h = math.ceil(height / chunk_size)
+    n_win_w = math.ceil(width / chunk_size)
+    for i in range(n_win_h):
+        for j in range(n_win_w):
+            off_h = i * chunk_size
+            off_w = j * chunk_size
+            h = chunk_size + overlap
+            h = h - (off_h + h) % height if off_h + h > height else h
+            w = chunk_size + overlap
+            w = w - (off_w + w) % width if off_w + w > width else w
+            yield windows.Window(off_w, off_h, w, h)
+
+
+# def get_iter_windows(
+#         width,
+#         height,
+#         chunk_size=0,
+#         overlap=0,
+#         row_off=0,
+#         col_off=0
+#     ):
+#         h = chunk_size
+#         for i in range(
+#             int(row_off),
+#             int(row_off + height + chunk_size),
+#             chunk_size
+#                 ):
+#             if i + h > row_off + height:
+#                 h = height - i
+#                 if h <= 0:
+#                     break
+#             w = chunk_size
+#             for j in range(
+#                 int(col_off),
+#                 int(col_off + width + chunk_size),
+#                 chunk_size
+#                     ):
+#                 if j + w > col_off + width:
+#                     w = width - j
+#                     if w <= 0:
+#                         break
+#                 o = overlap
+#                 while j + w + o > width:
+#                     o -= 1
+#                 w += o
+#                 o = overlap
+#                 while i + h + o > height:
+#                     o -= 1
+#                 h += o
+#                 yield windows.Window(j, i, w, h)
 
 
 # def get_multipolygon_from_axes(ax):
