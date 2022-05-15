@@ -753,19 +753,15 @@ class Raster:
     def overlap(self, overlap: Union[int, None]):
         self._overlap = overlap
 
-import math
+
 def get_iter_windows(
         width,
         height,
         chunk_size=0,
         overlap=0,
-        # row_off=0,
-        # col_off=0
 ):
-    # win_h = chunk_size + overlap
-    # win_w = chunk_size + overlap
-    n_win_h = math.ceil(height / chunk_size)
-    n_win_w = math.ceil(width / chunk_size)
+    n_win_h = np.ceil(height / chunk_size)
+    n_win_w = np.ceil(width / chunk_size)
     for i in range(n_win_h):
         for j in range(n_win_w):
             off_h = i * chunk_size

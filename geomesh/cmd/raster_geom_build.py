@@ -49,7 +49,8 @@ def main():
             nprocs=args.nprocs,
             unary_union=False if args.no_unary_union else True
         )
-    if args.no_unary_union:
+    
+    if args.no_unary_union and mp is not None:
         gdf = gpd.GeoDataFrame([{'geometry': geometry} for geometry in mp], crs=dst_crs)
     else:
         gdf = gpd.GeoDataFrame([{'geometry': mp}], crs=dst_crs)
