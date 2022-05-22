@@ -152,7 +152,6 @@ class BuildCli:
     async def srun_geom_combine(self, filepaths):
         # first step is to geom-eat; should probably return a new filepaths_original
         outpaths = await self._generate_geom_difference(filepaths)
-<<<<<<< Updated upstream
         # tasks = []
         # indexes = []
         # for i, (raster_path, geom_opts) in enumerate(iter_raster_requests(self.config.geom)):
@@ -190,23 +189,6 @@ class BuildCli:
             if isinstance(row.geometry, Polygon):
                 polygon_collection.append(row.geometry)
         return MultiPolygonGeom(MultiPolygon(polygon_collection), crs=gdf.crs)
-=======
-        for i, (path, geom_opts) in enumerate(iter_raster_requests(self.config.geom)):
-            if 'chunk_size' in geom_opts:
-                print(outpaths[i])
-        # gdfs = []
-        # for fpath in outpaths:
-        #     gdfs.append(gpd.read_feather(fpath))
-        # gdf = pd.concat(gdfs, ignore_index=True)
-        # print('saving gdf for testing')
-        # gdf.to_file(self.config.root_directory / 'all_geoms_diffs.gpkg', driver='GPKG', layer='all_geoms')
-        print('start unary_union')
-        exit()
-        mp = gdf.unary_union
-        if isinstance(mp, Polygon):
-            mp = MultiPolygon([mp])
-        return MultiPolygonGeom(mp, crs=gdf.crs)
->>>>>>> Stashed changes
         
         # gdf.plot(facecolor='none')
         # import matplotlib.pyplot as plt
@@ -306,13 +288,7 @@ class BuildCli:
         tasks = []
         for i, fname in reversed_filenames:
             tasks.append(asyncio.get_event_loop().create_task(self._await_geom_difference(fname, filepaths[:i], self.config.geom.slurm.max_tasks_per_node.next())))
-<<<<<<< Updated upstream
         return await asyncio.gather(*reversed(tasks))
-=======
-        return await asyncio.gather(*tasks)
-
-        # return outpaths
->>>>>>> Stashed changes
         # filepaths = list(reversed(filepaths))
         # for i in range(len(filepaths)):
         #     cmd = []
