@@ -40,7 +40,7 @@ class SlurmConfig(UserDict):
 
     @cached_property
     def max_tasks_per_node(self):
-        return MaxTasksPerNode(self.get('max_tasks_per_node'))
+        return MaxTasksPerNode(self.get('max_tasks_per_node'), exclude=self.get('exclude'), exclude_allocated=self.get('exclude_allocated', False))
     
     @cached_property
     def time(self):
@@ -470,10 +470,15 @@ class ConfigParser(UserDict):
 
         if p.exitstatus != 0:
             raise Exception(p.before)
-        
+  
 class NodeNames:
     
-    def __init__(self):
+    def __init__(self, exclude=None, exclude_allocated=False):
+        if exclude is not None:
+            if isinstance(exclude, str):
+                exclude = exclude.split(',')
+        else:
+            exclude = []
         with pexpect.spawn(
                 'sinfo -N',
                 encoding='utf-8',
@@ -481,18 +486,17 @@ class NodeNames:
                 # cwd=output_directory
         ) as p:
             p.expect(pexpect.EOF)
-        # print(p.before.split())
-        # exit()
         for line in p.before.split('\n'):
             line = line.split()
             if len(line) == 0:
                 continue
             status = line[-1].strip('*')
             if status not in ["STATE", "down", 'drain', "drained", "draining", "fail", "failing", "future", "maint", "perfctrs", "planned", "power_down", "power_up", "reserved", "unknown"]:
-                # print(status)
-                self.names.append(line[0])
-        # print(self.names)
-        # exit()
+                if status == "alloc" and exclude_allocated is True:
+                    continue
+                name = line[0]
+                if name not in exclude:
+                    self.names.append(name)
         self._cnt = 0
         
     def __iter__(self):
@@ -516,16 +520,16 @@ class NodeNames:
 
 class MaxTasksPerNode:
 
-    def __init__(self, max_tasks=None):
+    def __init__(self, max_tasks=None, exclude=None, exclude_allocated=False):
         self._cnt = 0
         if max_tasks is None:
             self.names = [None]
-            return
-        assert isinstance(max_tasks, int), 'max_tasks must be an int>0 or None'
-        assert max_tasks>0, 'max_tasks must be an int>0 or None'
-        self._max_tasks = max_tasks
-        self.names = [uuid.uuid4().hex for i in range(max_tasks)]
-        self.nodelist = NodeNames()
+        else:
+            assert isinstance(max_tasks, int), 'max_tasks must be an int>0 or None'
+            assert max_tasks>0, 'max_tasks must be an int>0 or None'
+            self._max_tasks = max_tasks
+            self.names = [uuid.uuid4().hex for i in range(max_tasks)]
+        self.nodelist = NodeNames(exclude, exclude_allocated)
 
     def __iter__(self):
         return self

@@ -1,4 +1,6 @@
 import asyncio
+from builtins import breakpoint
+import itertools
 import logging
 import pickle
 from pathlib import Path
@@ -18,7 +20,7 @@ from geomesh.geom.shapely import MultiPolygonGeom
 from geomesh.hfun.mesh import MeshHfun
 
 from .configparser import ConfigParser
-from .raster_opts import append_cmd_opts as append_raster_cmd_opts
+from .raster_opts import append_cmd_opts as append_raster_cmd_opts, iter_raster_requests
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -37,10 +39,9 @@ class BuildCli:
                 if self.config.mesh.interpolate is None:
                     raise ValueError('need to interpolate in order to obtain boundaries')
         
+        logger.info('Generating geom tasks')
         geom_tasks = []
-        hfun_tasks = []
         geom_result = []
-        hfun_result = []
         if getattr(self.config.geom, 'slurm', None) is not None:
             geom_tasks.extend(self.config.geom.launch_tasks(self.config.cache_directory))
         else:
@@ -48,6 +49,9 @@ class BuildCli:
                 for geom_job in self.config.geom.get_jobs():
                     geom_result.append(geom_job())
 
+        logger.info('Generating hfun tasks')
+        hfun_tasks = []
+        hfun_result = []
         if getattr(self.config.hfun, 'slurm', None) is not None:
             hfun_tasks.extend(self.config.hfun.launch_tasks(self.config.cache_directory))
         else:
@@ -87,8 +91,16 @@ class BuildCli:
             verbosity=1
         )
         mesh = driver.output_mesh
-        if self.config.mesh.interpolate is not None:
-            self.interpolate_mesh(mesh)
+        from geomesh.mesh.parsers import sms2dm
+        from geomesh import utils
+        sms2dm.writer(utils.msh_t_to_2dm(mesh.msh_t), Path(__file__).parent / 'hgrid.2dm', True)
+        exit()
+        # breakpoint()
+        # sms2dm.writer(utils.msh_t_to_2dm(self.msh_t), path, overwrite)
+        # mesh.write(Path(__file__).parent / 'hgrid.2dm', format='2dm', overwrite=True)
+        if self.config.mesh is not None:
+            if self.config.mesh.interpolate is not None:
+                self.interpolate_mesh(mesh)
         
         
         
@@ -102,8 +114,8 @@ class BuildCli:
             
         # from geomesh import utils
         # utils.finalize_mesh(mesh.msh_t)
-        if self.config.mesh.boundaries is not None:
-            self.build_boundaries(mesh)
+            if self.config.mesh.boundaries is not None:
+                self.build_boundaries(mesh)
             # mesh.boundaries.open.plot(facecolor='none')
             # ax = mesh.boundaries.gdf.plot('ibtype', facecolor='none')
             # mesh.boundaries.open.plot(ax=ax, facecolor='none')
@@ -111,28 +123,72 @@ class BuildCli:
             # mesh.nodes.gdf[mesh.nodes.gdf.loc['id'==3809]].plot(ax=ax)
             # import matplotlib.pyplot as plt
             # plt.show()
-        if self.config.mesh.outputs is not None:
-            self.process_outputs(mesh)
+            if self.config.mesh.outputs is not None:
+                self.process_outputs(mesh)
         # mesh.write('output.2dm', overwrite=True)
         # mesh.values[:] = values
         # values = await self._get_mesh_interpolation(mesh)
         
+    async def async_flatten_filepath(self, fpath, outdir, nprocs, job_name=None):
+        # del self.config.geom.max_tasks_per_node
+
+        cmd = [
+            'srun',
+            f'-c{nprocs}',
+            f'{sys.executable}',
+            f'{Path(__file__).parent.resolve() / "flatten_filepath.py"}',
+            f'{fpath.resolve()}',
+            f'{outdir.resolve()}',
+            f'--nprocs={nprocs}',
+        ]
+        if job_name is not None:
+            cmd.insert(2, f'--job-name={job_name[0]}')
+            cmd.insert(3, '--dependency=singleton')
+            cmd.insert(4, f'--nodelist={job_name[1]}')
+
+        await self.config.geom._await_pexpect(cmd)
+        return list(outdir.glob(f'*_' + f'{fpath.name}'))
 
     async def srun_geom_combine(self, filepaths):
         # first step is to geom-eat; should probably return a new filepaths_original
         outpaths = await self._generate_geom_difference(filepaths)
+        # tasks = []
+        # indexes = []
+        # for i, (raster_path, geom_opts) in enumerate(iter_raster_requests(self.config.geom)):
+        #     if 'chunk_size' in geom_opts:
+        #         fpath = outpaths[i]
+        #         outdir = outpaths[i].parent
+        #         tasks.append(asyncio.get_event_loop().create_task(self.async_flatten_filepath(
+        #             fpath, outdir, self.config.geom.slurm.cpus_per_task,
+        #             job_name=self.config.geom.slurm.max_tasks_per_node.next())))
+        #         indexes.append(i)
+        # if len(tasks) > 0:
+        #     new_paths = await asyncio.gather(*tasks)
+        #     for i, index in enumerate(indexes):
+        #         outpaths[index].unlink()
+        #         outpaths[index] = new_paths[i]
+        #     outpaths = np.hstack(outpaths).tolist()
         gdfs = []
         for fpath in outpaths:
             gdfs.append(gpd.read_feather(fpath))
         gdf = pd.concat(gdfs, ignore_index=True)
-        print('saving gdf for testing')
-        gdf.to_file(self.config.root_directory / 'all_geoms_diffs.gpkg', driver='GPKG', layer='all_geoms')
-        print('start unary_union')
-        exit()
-        mp = gdf.unary_union
-        if isinstance(mp, Polygon):
-            mp = MultiPolygon([mp])
-        return MultiPolygonGeom(mp, crs=gdf.crs)
+        # print('saving gdf for testing')
+        # gdf.to_file(self.config.root_directory / 'all_geoms_diffs.gpkg', driver='GPKG', layer='all_geoms')
+        # print('start unary_union')
+        # from time import time
+        # start = time()
+        # mp = gdf.unary_union
+        # if isinstance(mp, Polygon):
+        #     mp = MultiPolygon([mp])
+        # print(f'unary_union took: {time()-start}')
+        polygon_collection = []
+        for row in gdf.itertuples():
+            if isinstance(row.geometry, MultiPolygon):
+                for polygon in row.geometry.geoms:
+                    polygon_collection.append(polygon)
+            if isinstance(row.geometry, Polygon):
+                polygon_collection.append(row.geometry)
+        return MultiPolygonGeom(MultiPolygon(polygon_collection), crs=gdf.crs)
         
         # gdf.plot(facecolor='none')
         # import matplotlib.pyplot as plt
@@ -232,7 +288,7 @@ class BuildCli:
         tasks = []
         for i, fname in reversed_filenames:
             tasks.append(asyncio.get_event_loop().create_task(self._await_geom_difference(fname, filepaths[:i], self.config.geom.slurm.max_tasks_per_node.next())))
-        return await asyncio.gather(*tasks)
+        return await asyncio.gather(*reversed(tasks))
         # filepaths = list(reversed(filepaths))
         # for i in range(len(filepaths)):
         #     cmd = []

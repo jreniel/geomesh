@@ -98,14 +98,14 @@ def combine_hfun_collection(hfun_collection, nprocs):
         _msh_t = _hfun.msh_t()
         index.append(_msh_t.tria3['index'] + offset)
         coord.append(_msh_t.vert2['coord'])
-        value.append(_msh_t.value)
+        value.append(_msh_t.value.flatten())
         offset += _msh_t.vert2['coord'].shape[0]
     hfun.vert2 = np.array([(coord, 0) for coord in np.vstack(coord)],
                           dtype=jigsaw_msh_t.VERT2_t)
     # breakpoint()
     hfun.tria3 = np.array([(index, 0) for index in np.vstack(index)],
                           dtype=jigsaw_msh_t.TRIA3_t)
-    hfun.value = np.array(np.vstack(value), dtype=jigsaw_msh_t.REALS_t)
+    hfun.value = np.array(np.hstack(value).T, dtype=jigsaw_msh_t.REALS_t)
     hfun.crs = base_hfun_crs
     return hfun
 

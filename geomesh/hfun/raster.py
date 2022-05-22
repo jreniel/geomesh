@@ -190,6 +190,7 @@ class RasterHfun(BaseHfun, Raster):
 
             opts.hfun_hmin = np.min(hfun.value) if self.hmin is None else self.hmin
             opts.hfun_hmax = np.max(hfun.value) if self.hmax is None else self.hmax
+            print(opts.hfun_hmax)
             opts.verbosity = self.verbosity if verbosity is None else verbosity
 
             # output mesh
