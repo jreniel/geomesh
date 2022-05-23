@@ -190,7 +190,6 @@ class RasterHfun(BaseHfun, Raster):
 
             opts.hfun_hmin = np.min(hfun.value) if self.hmin is None else self.hmin
             opts.hfun_hmax = np.max(hfun.value) if self.hmax is None else self.hmax
-            print(opts.hfun_hmax)
             opts.verbosity = self.verbosity if verbosity is None else verbosity
 
             # output mesh
@@ -298,7 +297,6 @@ class RasterHfun(BaseHfun, Raster):
         Arguments:
             feature: shapely.geometryLineString or MultiLineString
         """
-
         # Check nprocs
         nprocs = -1 if nprocs is None else nprocs
         nprocs = cpu_count() if nprocs == -1 else nprocs
@@ -314,6 +312,10 @@ class RasterHfun(BaseHfun, Raster):
 
         elif isinstance(feature, MultiLineString):
             feature = [linestring for linestring in feature.geoms]
+
+        # for _feat in feature:
+        #     if not isinstance(_feat, LineString):
+        #         print(type(_feat))
 
         # check target size
         target_size = self.hmin if target_size is None else target_size
@@ -798,7 +800,7 @@ class RasterHfun(BaseHfun, Raster):
             x, y = self.get_x(window), self.get_y(window)
             logger.debug(f"Processing window {i+1}/{total_windows}.")
             features = []
-            values = self.get_values(band=1, window=window)
+            values = self.raster.get_values(band=1, window=window)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
                 logger.debug("Computing contours...")
@@ -837,7 +839,6 @@ class RasterHfun(BaseHfun, Raster):
                     geometry = MultiLineString([geometry])
             for linestring in geometry:
                 features.append(linestring)
-        logger.debug("Merging features.")
         return ops.linemerge(features)
 
 
@@ -864,17 +865,34 @@ def transform_linestring(
 
 def repartition_features(linestring, max_verts):
     features = []
-    if len(linestring.coords) > max_verts:
-        new_feat = []
-        for segment in list(
-            map(LineString, zip(linestring.coords[:-1], linestring.coords[1:]))
-        ):
-            new_feat.append(segment)
-            if len(new_feat) == max_verts - 1:
-                features.append(ops.linemerge(new_feat))
+    if isinstance(linestring, MultiLineString):
+        _mls = linestring
+        for linestring in _mls:
+            if len(linestring.coords) > max_verts:
                 new_feat = []
-        if len(new_feat) != 0:
-            features.append(ops.linemerge(new_feat))
-    else:
-        features.append(linestring)
+                for segment in list(
+                    map(LineString, zip(linestring.coords[:-1], linestring.coords[1:]))
+                ):
+                    new_feat.append(segment)
+                    if len(new_feat) == max_verts - 1:
+                        features.append(ops.linemerge(new_feat))
+                        new_feat = []
+                if len(new_feat) != 0:
+                    features.append(ops.linemerge(new_feat))
+            else:
+                features.append(linestring)
+    elif isinstance(linestring, LineString):
+        if len(linestring.coords) > max_verts:
+            new_feat = []
+            for segment in list(
+                map(LineString, zip(linestring.coords[:-1], linestring.coords[1:]))
+            ):
+                new_feat.append(segment)
+                if len(new_feat) == max_verts - 1:
+                    features.append(ops.linemerge(new_feat))
+                    new_feat = []
+            if len(new_feat) != 0:
+                features.append(ops.linemerge(new_feat))
+        else:
+            features.append(linestring)
     return features

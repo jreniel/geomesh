@@ -17,6 +17,8 @@ import warnings; warnings.filterwarnings('ignore', message='.*initial implementa
 
 logger = logging.getLogger(__name__)
 
+logging.getLogger('geomesh').setLevel(logging.DEBUG)
+
 def parse_args():
     parser = argparse.ArgumentParser()
     add_raster_args(parser)
@@ -53,8 +55,8 @@ def parse_args():
     parser.add_argument('--verbosity', choices=[0, 1, 2], default=0, type=int)
     # parser.add_argument('--log-level', choices=[0, 1, 2], default=0, type=int)
     parser.add_argument('--show', action='store_true')
-    parser.add_argument('--to-msh', '--to_msh', type=lambda x: Path(x))
-    parser.add_argument('--to-pickle', '--to_pickle', '--to-pkl', '--pkl', type=lambda x: Path(x))
+    parser.add_argument('--to-msh', '--to_msh', type=Path)
+    parser.add_argument('--to-pickle', '--to_pickle', '--to-pkl', '--pkl', type=Path)
     # parser.add_argument('--to-feather', '--to_feather', type=lambda x: Path(x))
     return parser.parse_args()
 
@@ -72,7 +74,7 @@ def main():
         # I think we can use setdefault instead.
         contour_kwargs.update({'nprocs': contour_kwargs.get('nprocs', args.nprocs)})
         hfun.add_contour(**contour_kwargs)
-        
+
     msh_t = hfun.msh_t()
     
     if args.to_msh:

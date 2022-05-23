@@ -91,12 +91,6 @@ class BuildCli:
             verbosity=1
         )
         mesh = driver.output_mesh
-        from geomesh.mesh.parsers import sms2dm
-        from geomesh import utils
-        sms2dm.writer(utils.msh_t_to_2dm(mesh.msh_t), Path(__file__).parent / 'hgrid.2dm', True)
-        exit()
-        # breakpoint()
-        # sms2dm.writer(utils.msh_t_to_2dm(self.msh_t), path, overwrite)
         # mesh.write(Path(__file__).parent / 'hgrid.2dm', format='2dm', overwrite=True)
         if self.config.mesh is not None:
             if self.config.mesh.interpolate is not None:

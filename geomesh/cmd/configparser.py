@@ -17,7 +17,7 @@ from shapely.geometry import box
 import uuid
 import yaml
 
-from .raster_opts import append_cmd_opts as append_raster_cmd_opts, iter_raster_requests
+from geomesh.cmd.raster_opts import append_cmd_opts as append_raster_cmd_opts, iter_raster_requests
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ class HfunConfigParser(UserDict):
 
     async def _await_hfun_raster_request(self, path, hfun_opts, output_directory):
         output_filename = output_directory / f'{Path(path).name}_{uuid.uuid4().hex[:6]}.pkl'
-        await self._await_pexpect(self.get_raster_request_cmd(path, hfun_opts, output_filename))   
+        await self._await_pexpect(self.get_raster_request_cmd(path, hfun_opts, output_filename))
         return output_filename
     
     async def _await_hfun_feature_request(self, path, hfun_opts, output_directory):
