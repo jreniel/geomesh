@@ -459,8 +459,9 @@ class ConfigParser(UserDict):
         return cls(yml)
 
     async def _await_pexpect(self, cmd: List[str]) -> None:
+        cmd = ' '.join(cmd)
         with pexpect.spawn(
-                ' '.join(cmd),
+                cmd,
                 encoding='utf-8',
                 timeout=None,
                 # cwd=output_directory
@@ -469,7 +470,7 @@ class ConfigParser(UserDict):
             await p.expect(pexpect.EOF, async_=True)
 
         if p.exitstatus != 0:
-            raise Exception(p.before)
+            raise Exception(f'Failed command: {cmd}\n{p.before}')
   
 class NodeNames:
     

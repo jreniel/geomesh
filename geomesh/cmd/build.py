@@ -47,7 +47,19 @@ class BuildCli:
         else:
             if self.config.geom is not None:
                 for geom_job in self.config.geom.get_jobs():
-                    geom_result.append(geom_job())
+                    geom_result.append(geom_job())  
+        
+        if len(geom_tasks) > 0:
+            geom_result.extend(asyncio.get_event_loop().run_until_complete(asyncio.gather(*geom_tasks)))
+            if getattr(self.config.geom, 'slurm', None) is not None:
+                geom_combine_task = asyncio.get_event_loop().create_task(self.srun_geom_combine(geom_result))
+      
+        geom = None
+        if len(geom_tasks) > 0:
+            geom = asyncio.get_event_loop().run_until_complete(asyncio.gather(geom_combine_task))[0]
+        else:
+            if len(geom_result) > 0:
+                geom = self.finalize_geom(geom_result)
 
         logger.info('Generating hfun tasks')
         hfun_tasks = []
@@ -58,25 +70,15 @@ class BuildCli:
             if self.config.hfun is not None:    
                 for hfun_job in self.config.hfun.get_jobs():
                     hfun_result.append(hfun_job())
-        
-        if len(geom_tasks) > 0:
-            geom_result.extend(asyncio.get_event_loop().run_until_complete(asyncio.gather(*geom_tasks)))
-            if getattr(self.config.geom, 'slurm', None) is not None:
-                geom_combine_task = asyncio.get_event_loop().create_task(self.srun_geom_combine(geom_result))
+
 
         if len(hfun_tasks) > 0:
             hfun_result.extend(asyncio.get_event_loop().run_until_complete(asyncio.gather(*hfun_tasks)))
             if getattr(self.config.hfun, 'slurm', None) is not None:
                 hfun_combine_task = asyncio.get_event_loop().create_task(self.srun_hfun_combine(hfun_result))
             
-        geom = None
         hfun = None
-        if len(geom_tasks) > 0:
-            geom = asyncio.get_event_loop().run_until_complete(asyncio.gather(geom_combine_task))[0]
-        else:
-            if len(geom_result) > 0:
-                geom = self.finalize_geom(geom_result)
-            
+           
         if len(hfun_tasks) > 0:
             hfun = asyncio.get_event_loop().run_until_complete(asyncio.gather(hfun_combine_task))[0]
         else:
@@ -85,6 +87,7 @@ class BuildCli:
         # geom.make_plot(show=True)
         # hfun.tricontourf(levels=256, show=True)
         # TODO: This part needs to be sent to srun when applicable (it may require significant RAM)
+
         driver = JigsawDriver(
             geom=geom,
             hfun=hfun,
@@ -92,6 +95,9 @@ class BuildCli:
         )
         mesh = driver.output_mesh
         # mesh.write(Path(__file__).parent / 'hgrid.2dm', format='2dm', overwrite=True)
+        from geomesh.mesh.parsers import sms2dm
+        from geomesh import utils
+        sms2dm.writer(utils.msh_t_to_2dm(mesh.msh_t), self.config.root_directory / 'hgrid.2dm', True)
         if self.config.mesh is not None:
             if self.config.mesh.interpolate is not None:
                 self.interpolate_mesh(mesh)
@@ -146,22 +152,24 @@ class BuildCli:
     async def srun_geom_combine(self, filepaths):
         # first step is to geom-eat; should probably return a new filepaths_original
         outpaths = await self._generate_geom_difference(filepaths)
-        # tasks = []
-        # indexes = []
-        # for i, (raster_path, geom_opts) in enumerate(iter_raster_requests(self.config.geom)):
-        #     if 'chunk_size' in geom_opts:
-        #         fpath = outpaths[i]
-        #         outdir = outpaths[i].parent
-        #         tasks.append(asyncio.get_event_loop().create_task(self.async_flatten_filepath(
-        #             fpath, outdir, self.config.geom.slurm.cpus_per_task,
-        #             job_name=self.config.geom.slurm.max_tasks_per_node.next())))
-        #         indexes.append(i)
-        # if len(tasks) > 0:
-        #     new_paths = await asyncio.gather(*tasks)
-        #     for i, index in enumerate(indexes):
-        #         outpaths[index].unlink()
-        #         outpaths[index] = new_paths[i]
-        #     outpaths = np.hstack(outpaths).tolist()
+        tasks = []
+        indexes = []
+        for i, (raster_path, geom_opts) in enumerate(iter_raster_requests(self.config.geom)):
+            if 'chunk_size' in geom_opts:
+                fpath = outpaths[i]
+                outdir = outpaths[i].parent
+                tasks.append(asyncio.get_event_loop().create_task(self.async_flatten_filepath(
+                    fpath, outdir, self.config.geom.slurm.cpus_per_task,
+                    job_name=self.config.geom.slurm.max_tasks_per_node.next())))
+                indexes.append(i)
+        if len(tasks) > 0:
+            new_paths = await asyncio.gather(*tasks)
+            for i, index in enumerate(indexes):
+                outpaths[index].unlink()
+                outpaths[index] = new_paths[i]
+            outpaths = np.hstack(outpaths).tolist()
+        # print(f'copy files from: {outpaths[0].parent.resolve()}')
+        # breakpoint()
         gdfs = []
         for fpath in outpaths:
             gdfs.append(gpd.read_feather(fpath))

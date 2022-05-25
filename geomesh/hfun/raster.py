@@ -830,15 +830,13 @@ class RasterHfun(BaseHfun, Raster):
                 feathers.append(tmpfile)
         logger.debug("Concatenating feathers.")
         features = []
-        out = gpd.GeoDataFrame()
         for feather in feathers:
-            out = out.append(gpd.read_feather(feather), ignore_index=True)
-            feather.unlink()
-            for geometry in out.geometry:
+            for geometry in gpd.read_feather(feather).geometry:
                 if isinstance(geometry, LineString):
                     geometry = MultiLineString([geometry])
             for linestring in geometry:
                 features.append(linestring)
+            feather.unlink()
         return ops.linemerge(features)
 
 
