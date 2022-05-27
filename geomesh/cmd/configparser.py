@@ -38,13 +38,9 @@ class SlurmConfig(UserDict):
     def mem_per_cpu(self):
         return self.get('mem_per_cpu')
 
-    @cached_property
-    def max_tasks_per_node(self):
-        return MaxTasksPerNode(self.get('max_tasks_per_node'), exclude=self.get('exclude'), exclude_allocated=self.get('exclude_allocated', False))
-    
-    @cached_property
-    def time(self):
-        return self.get('time')
+    # @cached_property
+    # def max_tasks(self):
+    #     return MaxTasks(self.get('max_tasks'))
 
 class GeomConfigParser(UserDict):
 
@@ -54,17 +50,18 @@ class GeomConfigParser(UserDict):
             return SlurmConfig(self['slurm'])
 
 
-    def launch_tasks(self, cache_directory):
-        output_directory = cache_directory / 'geom'
-        output_directory.mkdir(exist_ok=True)
-        tasks = []
-        if self.slurm is None:
-            return tasks
-        for path, geom_opts in iter_raster_requests(self):
-            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_raster_request(path, geom_opts, output_directory, self.slurm.max_tasks_per_node.next())))
-        for path, geom_opts in self.iter_feature_requests():
-            tasks.append(asyncio.get_event_loop().create_task(self._await_geom_feature_request(path, geom_opts, output_directory, self.slurm.max_tasks_per_node.next())))
-        return tasks
+    # def launch_tasks(self, cache_directory):
+    #     output_directory = cache_directory / 'geom'
+    #     output_directory.mkdir(exist_ok=True)
+    #     tasks = []
+    #     if self.slurm is None:
+    #         return tasks
+    #     for path, geom_opts in iter_raster_requests(self):
+    #         # TODO !!!!! Limit number of concurrent jobs with --dependency=singleton, --job-name=XXX
+    #         tasks.append(asyncio.get_event_loop().create_task(self._await_geom_raster_request(path, geom_opts, output_directory, self.slurm.max_tasks.next())))
+    #     for path, geom_opts in self.iter_feature_requests():
+    #         tasks.append(asyncio.get_event_loop().create_task(self._await_geom_feature_request(path, geom_opts, output_directory, self.slurm.max_tasks.next())))
+    #     return tasks
     
     async def _await_geom_raster_request(self, path, geom_opts, output_directory, job_name: tuple = None):
         output_filename = output_directory / f'{Path(path).name}_{uuid.uuid4().hex[:6]}.feather'
@@ -503,48 +500,30 @@ class NodeNames:
     def __iter__(self):
         return self
 
-    def next(self):
-        return next(self)
+# class MaxTasks:
 
-    def __next__(self):
-        node_name = self.names[self._cnt]
-        if node_name is None:
-            return
-        self._cnt += 1
-        if self._cnt == len(self.names):
-            self._cnt = 0
-        return node_name
-        
-    @cached_property
-    def names(self):
-        return []
+#     def __init__(self, max_tasks=None):
+#         self._cnt = 0
+#         if max_tasks is None:
+#             self.names = [None]
+#             return
+#         assert isinstance(max_tasks, int), 'max_tasks must be an int>0 or None'
+#         assert max_tasks>0, 'max_tasks must be an int>0 or None'
+#         self._max_tasks = max_tasks
+#         self.names = [uuid.uuid4().hex for i in range(max_tasks)]
 
-class MaxTasksPerNode:
 
-    def __init__(self, max_tasks=None, exclude=None, exclude_allocated=False):
-        self._cnt = 0
-        if max_tasks is None:
-            self.names = [None]
-        else:
-            assert isinstance(max_tasks, int), 'max_tasks must be an int>0 or None'
-            assert max_tasks>0, 'max_tasks must be an int>0 or None'
-            self._max_tasks = max_tasks
-            self.names = [uuid.uuid4().hex for i in range(max_tasks)]
-        self.nodelist = NodeNames(exclude, exclude_allocated)
+#     def __iter__(self):
+#         return self
 
-    def __iter__(self):
-        return self
+#     def __next__(self):
+#         next_value = self.names[self._cnt]
+#         if next_value is None:
+#             return
+#         self._cnt += 1
+#         if self._cnt == self._max_tasks:
+#             self._cnt = 0
+#         return next_value
 
-    def __next__(self):
-        job_name = self.names[self._cnt]
-        if job_name is None:
-            return
-        self._cnt += 1
-        if self._cnt == self._max_tasks:
-            self._cnt = 0
-        nodename = self.nodelist.next()
-        job_name += f'_{nodename}'
-        return (job_name, nodename)
-
-    def next(self):
-        return next(self)
+#     def next(self):
+#         return next(self)

@@ -7,6 +7,7 @@ from pathlib import Path
 import os
 import sys
 import tempfile
+from typing import List
 
 # import dask_geopandas
 import geopandas as gpd
@@ -15,12 +16,15 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon, MultiPolygon
 
+
 from geomesh.driver import JigsawDriver
 from geomesh.geom.shapely import MultiPolygonGeom
 from geomesh.hfun.mesh import MeshHfun
 
 from .configparser import ConfigParser
 from .raster_opts import append_cmd_opts as append_raster_cmd_opts, iter_raster_requests
+from ._slurm import SlurmManager
+from . import raster_geom_build
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -31,103 +35,145 @@ class BuildCli:
         self.config = ConfigParser.from_yml(yml_path)
         # self.yaml_path = yml_path
 
-    def main(self):
-        
+    def main(self):       
+        self._step_0_preliminary_checks()
+        self._step_1_build_geoms()
+
+    def _step_0_preliminary_checks(self):
         # preliminary checks to avoid errors after execution
         if self.config.mesh is not None:
             if self.config.mesh.boundaries is not None:
                 if self.config.mesh.interpolate is None:
                     raise ValueError('need to interpolate in order to obtain boundaries')
-        
-        logger.info('Generating geom tasks')
-        geom_tasks = []
-        geom_result = []
-        if getattr(self.config.geom, 'slurm', None) is not None:
-            geom_tasks.extend(self.config.geom.launch_tasks(self.config.cache_directory))
-        else:
-            if self.config.geom is not None:
-                for geom_job in self.config.geom.get_jobs():
-                    geom_result.append(geom_job())  
-        
-        if len(geom_tasks) > 0:
-            geom_result.extend(asyncio.get_event_loop().run_until_complete(asyncio.gather(*geom_tasks)))
-            if getattr(self.config.geom, 'slurm', None) is not None:
-                geom_combine_task = asyncio.get_event_loop().create_task(self.srun_geom_combine(geom_result))
-      
-        geom = None
-        if len(geom_tasks) > 0:
-            geom = asyncio.get_event_loop().run_until_complete(asyncio.gather(geom_combine_task))[0]
-        else:
-            if len(geom_result) > 0:
-                geom = self.finalize_geom(geom_result)
-
-        logger.info('Generating hfun tasks')
-        hfun_tasks = []
-        hfun_result = []
-        if getattr(self.config.hfun, 'slurm', None) is not None:
-            hfun_tasks.extend(self.config.hfun.launch_tasks(self.config.cache_directory))
-        else:
-            if self.config.hfun is not None:    
-                for hfun_job in self.config.hfun.get_jobs():
-                    hfun_result.append(hfun_job())
 
 
-        if len(hfun_tasks) > 0:
-            hfun_result.extend(asyncio.get_event_loop().run_until_complete(asyncio.gather(*hfun_tasks)))
-            if getattr(self.config.hfun, 'slurm', None) is not None:
-                hfun_combine_task = asyncio.get_event_loop().create_task(self.srun_hfun_combine(hfun_result))
-            
-        hfun = None
-           
-        if len(hfun_tasks) > 0:
-            hfun = asyncio.get_event_loop().run_until_complete(asyncio.gather(hfun_combine_task))[0]
-        else:
-            if len(hfun_result) > 0:
-                hfun = self.finalize_hfun(hfun_result)
-        # geom.make_plot(show=True)
-        # hfun.tricontourf(levels=256, show=True)
-        # TODO: This part needs to be sent to srun when applicable (it may require significant RAM)
 
-        driver = JigsawDriver(
-            geom=geom,
-            hfun=hfun,
-            verbosity=1
-        )
-        mesh = driver.output_mesh
-        # mesh.write(Path(__file__).parent / 'hgrid.2dm', format='2dm', overwrite=True)
-        from geomesh.mesh.parsers import sms2dm
-        from geomesh import utils
-        sms2dm.writer(utils.msh_t_to_2dm(mesh.msh_t), self.config.root_directory / 'hgrid.2dm', True)
-        if self.config.mesh is not None:
-            if self.config.mesh.interpolate is not None:
-                self.interpolate_mesh(mesh)
+    def _step_1_build_geoms(self):
+        output_directory = self.config.cache_directory / 'geom'
+        output_directory.mkdir(exist_ok=True)
+        with SlurmManager(
+            max_tasks_per_node=self.config.geom.slurm.get('max_tasks_per_node', 1000000),
+            semaphore_value=self.config.geom.slurm.get('semaphore')
+        ) as sman:
+            output_feather_paths = []
+            for path, geom_opts in iter_raster_requests(self.config.geom):
+                output_filename = output_directory / f'{Path(path).name}.feather'
+                output_feather_paths.append(output_filename)
+                cmd = self._get_raster_request_cmd(path, geom_opts, output_filename)
+                sman.srun(cmd)
+        print(output_feather_paths)
+
+
+    def _get_raster_request_cmd(self, path, geom_opts, output_filename)->List[str]:
+        cmd = []
+        cmd.extend([
+                f'{sys.executable}',
+                f'{Path(raster_geom_build.__file__).resolve()}',
+                f"{Path(path).resolve()}",
+                # f'--to-file={output_filename.resolve()}',
+                f'--to-feather={output_filename.resolve()}',
+                # f'--gdf-to-pickle={output_filename.resolve()}',
+            ])
+        if 'zmin' in geom_opts:
+            cmd.append(f"--zmin={geom_opts['zmin']}")
         
-        
-        
-        # with open('tmpmesh.pkl', 'wb') as fh:
-        #     pickle.dump(mesh, fh)
-        
+        if 'zmax' in geom_opts:
+            cmd.append(f"--zmax={geom_opts['zmax']}")
+        append_raster_cmd_opts(cmd, geom_opts)
+        # print(' '.join(cmd))
         # exit()
-                
-        # with open('tmpmesh.pkl', 'rb') as fh:
-        #     mesh = pickle.load(fh)
+        return cmd
+
+
+        # if self.config.geom.slurm is not None:
+        #     with SlurmManager(
+        #         max_tasks_per_node=self.config.geom.slurm.max_tasks_per_node,
+        #         semaphore_value=100,
+        #     ) as sman:
+        #         sman.srun(cmd)
+        # else:
+        #     raise NotImplementedError('only slurm is enabled')
+
+
+        # geom_tasks = []
+        # hfun_tasks = []
+        # geom_result = []
+        # hfun_result = []
+        # if getattr(self.config.geom, 'slurm', None) is not None:
+        #     geom_tasks.extend(self.config.geom.launch_tasks(self.config.cache_directory))
+        # else:
+        #     if self.config.geom is not None:
+        #         for geom_job in self.config.geom.get_jobs():
+        #             geom_result.append(geom_job())
+
+        # if getattr(self.config.hfun, 'slurm', None) is not None:
+        #     hfun_tasks.extend(self.config.hfun.launch_tasks(self.config.cache_directory))
+        # else:
+        #     if self.config.hfun is not None:    
+        #         for hfun_job in self.config.hfun.get_jobs():
+        #             hfun_result.append(hfun_job())
+        
+        # if len(geom_tasks) > 0:
+        #     geom_result.extend(asyncio.get_event_loop().run_until_complete(asyncio.gather(*geom_tasks)))
+        #     if getattr(self.config.geom, 'slurm', None) is not None:
+        #         geom_combine_task = asyncio.get_event_loop().create_task(self.srun_geom_combine(geom_result))
+
+        # if len(hfun_tasks) > 0:
+        #     hfun_result.extend(asyncio.get_event_loop().run_until_complete(asyncio.gather(*hfun_tasks)))
+        #     if getattr(self.config.hfun, 'slurm', None) is not None:
+        #         hfun_combine_task = asyncio.get_event_loop().create_task(self.srun_hfun_combine(hfun_result))
             
-        # from geomesh import utils
-        # utils.finalize_mesh(mesh.msh_t)
-            if self.config.mesh.boundaries is not None:
-                self.build_boundaries(mesh)
-            # mesh.boundaries.open.plot(facecolor='none')
-            # ax = mesh.boundaries.gdf.plot('ibtype', facecolor='none')
-            # mesh.boundaries.open.plot(ax=ax, facecolor='none')
-            # mesh.nodes.gdf.loc[mesh.nodes.gdf['id'] == 3809].plot(ax=ax)
-            # mesh.nodes.gdf[mesh.nodes.gdf.loc['id'==3809]].plot(ax=ax)
-            # import matplotlib.pyplot as plt
-            # plt.show()
-            if self.config.mesh.outputs is not None:
-                self.process_outputs(mesh)
-        # mesh.write('output.2dm', overwrite=True)
-        # mesh.values[:] = values
-        # values = await self._get_mesh_interpolation(mesh)
+        # geom = None
+        # hfun = None
+        # if len(geom_tasks) > 0:
+        #     geom = asyncio.get_event_loop().run_until_complete(asyncio.gather(geom_combine_task))[0]
+        # else:
+        #     if len(geom_result) > 0:
+        #         geom = self.finalize_geom(geom_result)
+            
+        # if len(hfun_tasks) > 0:
+        #     hfun = asyncio.get_event_loop().run_until_complete(asyncio.gather(hfun_combine_task))[0]
+        # else:
+        #     if len(hfun_result) > 0:
+        #         hfun = self.finalize_hfun(hfun_result)
+        # # geom.make_plot(show=True)
+        # # hfun.tricontourf(levels=256, show=True)
+        # # TODO: This part needs to be sent to srun when applicable (it may require significant RAM)
+        # driver = JigsawDriver(
+        #     geom=geom,
+        #     hfun=hfun,
+        #     verbosity=1
+        # )
+        # mesh = driver.output_mesh
+        # if self.config.mesh.interpolate is not None:
+        #     self.interpolate_mesh(mesh)
+        
+        
+        
+        # # with open('tmpmesh.pkl', 'wb') as fh:
+        # #     pickle.dump(mesh, fh)
+        
+        # # exit()
+                
+        # # with open('tmpmesh.pkl', 'rb') as fh:
+        # #     mesh = pickle.load(fh)
+            
+        # # from geomesh import utils
+        # # utils.finalize_mesh(mesh.msh_t)
+        # if self.config.mesh.boundaries is not None:
+        #     self.build_boundaries(mesh)
+        #     # mesh.boundaries.open.plot(facecolor='none')
+        #     # ax = mesh.boundaries.gdf.plot('ibtype', facecolor='none')
+        #     # mesh.boundaries.open.plot(ax=ax, facecolor='none')
+        #     # mesh.nodes.gdf.loc[mesh.nodes.gdf['id'] == 3809].plot(ax=ax)
+        #     # mesh.nodes.gdf[mesh.nodes.gdf.loc['id'==3809]].plot(ax=ax)
+        #     # import matplotlib.pyplot as plt
+        #     # plt.show()
+        # if self.config.mesh.outputs is not None:
+        #     self.process_outputs(mesh)
+        # # mesh.write('output.2dm', overwrite=True)
+        # # mesh.values[:] = values
+        # # values = await self._get_mesh_interpolation(mesh)
         
     async def async_flatten_filepath(self, fpath, outdir, nprocs, job_name=None):
         # del self.config.geom.max_tasks_per_node
