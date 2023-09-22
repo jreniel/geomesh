@@ -119,6 +119,7 @@ def to_string(description, nodes, elements, boundaries=None, crs=None):
 
     # ocean boundaries
     if boundaries is not None:
+        boundaries.setdefault(None, {})
         out.append(f"{len(boundaries[None]):d} "
                    "! total number of ocean boundaries")
         # count total number of ocean boundaries

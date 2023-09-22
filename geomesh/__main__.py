@@ -6,7 +6,7 @@ import sys
 
 from pytz import timezone
 
-from .cmd.build import BuildCli
+from geomesh.cmd.build import BuildCli
 # from .cmd.raster_geom_build import GeomCli
 
 # pygeos==0.10.2 && shapely==1.8.0
@@ -43,24 +43,13 @@ def main():
     init_logger()
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="clitype")
-    _add_build_cli_actions(subparsers)
-    # _add_geom_cli_actions(subparsers)
+    clitypes = {
+        'build': BuildCli,
+        }
+    for name, clitype in clitypes.items():
+        clitype.add_parser_arguments(subparsers.add_parser(name))
     args = parser.parse_args()
-    if args.clitype == 'build':
-        BuildCli(args.config).main()
-    # elif args.clitype == 'geom':
-    #     GeomCli(args).main()
-
-def _add_build_cli_actions(subparsers):
-    parser = subparsers.add_parser('build')
-    parser.add_argument('config')
-
-# def _add_geom_cli_actions(subparsers):
-#     parser = subparsers.add_parser('geom')
-#     actions= parser.add_subparsers(dest='geom_actions')
-#     build_parser = actions.add_parser('build')
-#     build_parser.add_argument('--raster', '-r', dest='rasters', action='append', metavar='uri')
-#     build_parser.add_argument('feature', nargs='?')
+    clitypes[args.clitype](args).main()
 
 
 if __name__ == "__main__":

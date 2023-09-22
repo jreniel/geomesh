@@ -1,0 +1,12 @@
+; DO NOT EDIT (unless you know what you are doing)
+;
+; This subdirectory is a git "subrepo", and this file is maintained by the
+; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+;
+[subrepo]
+	remote = git@github.com:jreniel/schedulers.git
+	branch = main
+	commit = 3c222a27601b83970207f08dff2efd5c178f81d4
+	parent = c56d49bc6b3407aa48d9e9312e27cd82e4c2dbff
+	method = merge
+	cmdver = 0.4.5

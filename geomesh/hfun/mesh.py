@@ -14,7 +14,7 @@ class MeshHfun(BaseHfun):
 
     def __init__(self, mesh: Union[BaseMesh, str, os.PathLike, jigsaw_msh_t]):
         self._mesh = mesh
-        
+
     def msh_t(self, dst_crs=None) -> jigsaw_msh_t:
         msh_t = self.mesh.msh_t
         if dst_crs is not None:
@@ -24,6 +24,10 @@ class MeshHfun(BaseHfun):
     @property
     def mesh(self) -> BaseMesh:
         return self._mesh
+
+    @property
+    def values(self):
+        return self.mesh.values
 
     @property
     def _mesh(self):
@@ -49,9 +53,7 @@ class MeshHfun(BaseHfun):
     @property
     def crs(self):
         return self.mesh.crs
-    
 
-    @figure
     def tricontourf(
         self,
         axes=None,

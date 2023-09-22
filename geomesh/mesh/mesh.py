@@ -2,59 +2,85 @@ from collections import defaultdict
 from functools import lru_cache, cached_property
 from itertools import permutations
 from multiprocessing import Pool, cpu_count
+from typing import Union, List
+import logging
 import os
 import pathlib
 import tempfile
-from typing import Union, List
 import warnings
 
-from attr import has
 
-import geopandas as gpd
 from jigsawpy import jigsaw_msh_t, savemsh, loadmsh, savevtk
 from matplotlib.cm import ScalarMappable
 from matplotlib.path import Path
-import matplotlib.pyplot as plt
 from matplotlib.transforms import Bbox
 from matplotlib.tri import Triangulation
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-import numpy as np
 from pyproj import CRS, Transformer
-import requests
 from scipy.interpolate import RectBivariateSpline, griddata
-from shapely.geometry import Polygon, LineString, LinearRing, MultiPolygon, box, Point
-
-from geomesh import utils
-from geomesh.figures import figure, get_topobathy_kwargs
-from geomesh.raster import Raster
-from geomesh.mesh.base import BaseMesh
-from geomesh.mesh.parsers import grd, sms2dm
+from shapely.geometry import Polygon, MultiPolygon, box, Point, MultiLineString, LineString
+from shapely.ops import linemerge, polygonize
+from scipy.spatial import KDTree
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+import requests
 
 from .boundaries import Boundaries
+from geomesh import utils
+from geomesh.figures import get_topobathy_kwargs
+from geomesh.mesh.base import BaseMesh
+from geomesh.mesh.parsers import grd, sms2dm
+from geomesh.raster import Raster
+
+logger = logging.getLogger(__name__)
 
 
 class Rings:
     def __init__(self, mesh: "EuclideanMesh"):
         self.mesh = mesh
 
-    @lru_cache(maxsize=1)
+    @lru_cache
     def __call__(self):
-        tri = self.mesh.elements.triangulation()
-        idxs = np.vstack(list(np.where(tri.neighbors == -1))).T
-        boundary_edges = []
-        for i, j in idxs:
-            boundary_edges.append((tri.triangles[i, j], tri.triangles[i, (j + 1) % 3]))
-        sorted_rings = sort_rings(edges_to_rings(boundary_edges), self.mesh.coord)
+        # Step 1: Construct a list of all edges
+        tria3 = self.mesh.msh_t.tria3['index']
+        quad4 = self.mesh.msh_t.quad4['index']
+        tria3_edges = np.hstack((tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])).reshape(-1, 2)
+        quad4_edges = np.hstack((quad4[:, [0, 1]], quad4[:, [1, 2]], quad4[:, [2, 3]], quad4[:, [3, 0]])).reshape(-1, 2)
+        all_edges = np.vstack([tria3_edges, quad4_edges])
+        sorted_edges = np.sort(all_edges, axis=1)
+        unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
+        boundary_edges = unique_edges[counts == 1]
+        boundary_rings = linemerge(MultiLineString([LineString(x) for x in self.mesh.msh_t.vert2['coord'][boundary_edges]]))
+        if isinstance(boundary_rings, LineString):
+            boundary_rings = MultiLineString(boundary_rings)
+        gpd.GeoDataFrame(geometry=[ls for ls in boundary_rings.geoms], crs=self.mesh.crs).plot(
+                facecolor='none',
+                cmap='tab20',
+                ax=plt.gca(),
+                )
+        plt.show(block=True)
+        breakpoint()
+        polygons = list(polygonize(boundary_rings))
+
+        gpd.GeoDataFrame(geometry=polygons, crs=self.mesh.crs).plot(facecolor='none', ax=plt.gca())
+        plt.show(block=True)
+        breakpoint()
+        raise
+
+        outer_polygons = []
+        outer_polygon, remaining = utils.filter_polygons(polygons)
+        outer_polygons.append(outer_polygon)
+        while len(remaining) > 0:
+            outer_polygon, remaining = utils.filter_polygons(remaining)
+            outer_polygons.append(outer_polygon)
+        mp = MultiPolygon(outer_polygons)
         data = []
-        for bnd_id, rings in sorted_rings.items():
-            coords = self.mesh.coord[rings["exterior"][:, 0], :]
-            geometry = LinearRing(coords)
-            data.append({"geometry": geometry, "bnd_id": bnd_id, "type": "exterior"})
-            for interior in rings["interiors"]:
-                coords = self.mesh.coord[interior[:, 0], :]
-                geometry = LinearRing(coords)
+        for bnd_id, polygon in enumerate(mp.geoms):
+            data.append({"geometry": polygon.exterior, "bnd_id": bnd_id, "type": "exterior"})
+            for interior in polygon.interiors:
                 data.append(
-                    {"geometry": geometry, "bnd_id": bnd_id, "type": "interior"}
+                    {"geometry": interior, "bnd_id": bnd_id, "type": "interior"}
                 )
         return gpd.GeoDataFrame(data, crs=self.mesh.crs)
 
@@ -63,17 +89,45 @@ class Rings:
 
     def interior(self):
         return self().loc[self()["type"] == "interior"]
-    
+
     @lru_cache(maxsize=1)
     def sorted(self):
-        tri = self.mesh.elements.triangulation()
-        idxs = np.vstack(list(np.where(tri.neighbors == -1))).T
-        boundary_edges = []
-        for i, j in idxs:
-            boundary_edges.append((tri.triangles[i, j], tri.triangles[i, (j + 1) % 3]))
-        return sort_rings(edges_to_rings(boundary_edges), self.mesh.coord)
+        mp = utils.geom_to_multipolygon(self.mesh.msh_t)
+        sorted_rings = {}
+        tree = KDTree(self.mesh.coord)
+        # on_edge = np.where(on_edge)
+        for id, polygon in enumerate(mp.geoms):
+            _, ii = tree.query(polygon.exterior.coords)
+            # e1 = [ii[(i+1) % ii.size] for i in range(ii.size)]
+            # exterior = np.vstack([np.array(ii), np.array(e1)]).T
+            exterior = np.vstack([ii, np.roll(ii, -1)]).T
+            interiors = []
+            for interior in polygon.interiors:
+                _, ii = tree.query(interior.coords)
+                # e1 = [ii[(i+1) % ii.size] for i in range(ii.size)]
+                # interior = np.vstack([np.array(ii), np.array(e1)]).T
+                interior = np.vstack([ii, np.roll(ii, -1)]).T
+                interiors.append(interior)
+            sorted_rings[id] = {'exterior': exterior, 'interiors': interiors}
+        # print('will verify')
+        # for id, ring_data in sorted_rings.items():
+        #     gpd.GeoDataFrame([{'geometry': LineString(
+        #         [
+        #             Point(*self.mesh.coord[e0, :]),
+        #             Point(*self.mesh.coord[e1, :])
+        #         ])}
+        #         for e0, e1 in ring_data['exterior']]).plot(ax=plt.gca(), color='k')
+        #     for interior in ring_data['interiors']:
+        #         gpd.GeoDataFrame([{'geometry': LineString(
+        #             [
+        #                 Point(*self.mesh.coord[e0, :]),
+        #                 Point(*self.mesh.coord[e1, :])
+        #             ])}
+        #             for e0, e1 in interior]).plot(ax=plt.gca(), color='r')
+        # print('will show...')
+        # plt.show(block=True)
 
-
+        return sorted_rings
 
 
 class Edges:
@@ -158,7 +212,7 @@ class Hull:
         )
 
     def multipolygon(self) -> MultiPolygon:
-        mp = self.implode().iloc[0].geometry
+        mp = self.implode().unary_union
         if isinstance(mp, Polygon):
             mp = MultiPolygon([mp])
         return mp
@@ -180,7 +234,7 @@ class Nodes:
         #     i + 1: (coord, self.mesh.value[i][0] if len(self.mesh.value[i]) <= 1 else self.mesh.value[i])
         #     for i, coord in enumerate(self.coords())
         # }
-        return {i + 1: (coord, self.mesh.value[i]) for i, coord in enumerate(self.coords())}
+        return {i + 1: (coord, self.mesh.value[i]) for i, coord in enumerate(self.mesh.coord)}
 
     def id(self):
         return list(self().keys())
@@ -227,7 +281,7 @@ class Nodes:
             append(self.mesh.elements.quads())
             self._indexes_around_index = indexes_around_index
         return list(self._indexes_around_index[index])
-    
+
     @property
     def gdf(self):
         if not hasattr(self, '_gdf'):
@@ -238,10 +292,9 @@ class Nodes:
                     'geometry': Point(coord),
                     'value': value,
                 })
-                
+
             self._gdf = gpd.GeoDataFrame(data, crs=self.mesh.crs)
         return self._gdf
-        
 
 
 class Elements:
@@ -460,15 +513,13 @@ class EuclideanMesh2D(EuclideanMesh):
         else:
             raise Exception(f'Unhandled return_type={return_type}.')
 
-
     @cached_property
     def boundaries(self):
         return Boundaries(self)
 
-    @figure
     def make_plot(
         self,
-        axes=None,
+        ax=None,
         vmin=None,
         vmax=None,
         title=None,
@@ -477,6 +528,7 @@ class EuclideanMesh2D(EuclideanMesh):
         elements=False,
         **kwargs
     ):
+        ax = ax or plt.gca()
         if vmin is None:
             vmin = np.min(self.values)
         if vmax is None:
@@ -484,28 +536,28 @@ class EuclideanMesh2D(EuclideanMesh):
         kwargs.update(**get_topobathy_kwargs(self.values, vmin, vmax))
         kwargs.pop('col_val')
         levels = kwargs.pop('levels')
+        # self.quadface(ax=ax, **kwargs)
         if vmin != vmax:
             self.tricontourf(
-                axes=axes,
+                ax=ax,
                 levels=levels,
                 vmin=vmin,
                 vmax=vmax,
                 **kwargs
             )
         else:
-            self.tripcolor(axes=axes, **kwargs)
+            self.tripcolor(ax=ax, **kwargs)
         if elements is True:
-            utils.triplot(self.msh_t, axes=axes)
-        self.quadface(axes=axes, **kwargs)
-        axes.axis('scaled')
+            utils.triplot(self.msh_t, ax=ax, linewidth=0.3)
+            utils.quadplot(self.msh_t, ax=ax, linewidth=0.3)
         if extent is not None:
-            axes.axis(extent)
+            ax.axis(extent)
         if title is not None:
-            axes.set_title(title)
+            ax.set_title(title)
         mappable = ScalarMappable(cmap=kwargs['cmap'])
         mappable.set_array([])
         mappable.set_clim(vmin, vmax)
-        divider = make_axes_locatable(axes)
+        divider = make_axes_locatable(ax)
         cax = divider.append_axes("bottom", size="2%", pad=0.5)
         cbar = plt.colorbar(
             mappable,
@@ -516,7 +568,8 @@ class EuclideanMesh2D(EuclideanMesh):
         cbar.set_ticklabels([np.around(vmin, 2), np.around(vmax, 2)])
         if cbar_label is not None:
             cbar.set_label(cbar_label)
-        return axes
+        ax.axis('scaled')
+        return ax
 
     def tricontourf(self, **kwargs):
         return utils.tricontourf(self.msh_t, **kwargs)
@@ -524,8 +577,11 @@ class EuclideanMesh2D(EuclideanMesh):
     def triplot(self, **kwargs):
         return utils.triplot(self.msh_t, **kwargs)
 
+    def quadplot(self, **kwargs):
+        return utils.quadplot(self.msh_t, **kwargs)
+
     def quadface(self, **kwargs):
-        return utils.quadface(self.msh_t, **kwargs)      
+        return utils.quadface(self.msh_t, **kwargs)
 
     def interpolate(
         self, raster: Union[Raster, List[Raster]], method="nearest", nprocs=None
@@ -554,7 +610,7 @@ class EuclideanMesh2D(EuclideanMesh):
             idxs, _values = _mesh_interpolate_worker(self.vert2["coord"], self.crs, raster[0].tmpfile, raster[0].chunk_size)
             values = self.msh_t.value.flatten()
             values[idxs] = _values
-        
+
         nan_idxs = np.where(np.isnan(values))
         q_non_nan = np.where(~np.isnan(values))
         values[nan_idxs] = griddata(
@@ -659,7 +715,246 @@ class Mesh(BaseMesh):
         raise TypeError(f"Unable to automatically determine file type for {str(path)}.")
 
 
+
+# from numba import jit
+# @jit(nopython)
+# def delete_workaround(arr, num):
+#     mask = np.zeros(arr.shape[0], dtype=np.int64) == 0
+#     mask[np.where(arr == num)[0]] = False
+#     return arr[mask]
+
+
+# def edges_to_rings(edges):
+#     """
+#     https://stackoverflow.com/questions/64960368/how-to-order-tuples-by-matching-the-first-and-last-values-of-each-a-b-b-c
+#     """
+
+
+
+    # while len(edges) > 0:
+    #     if ordered_edges[-1][1] in e0:
+    #         idx = e0.index(ordered_edges[-1][1])
+    #         ordered_edges.append(edges.pop(idx))
+    #     elif ordered_edges[0][0] in e1:
+    #         idx = e1.index(ordered_edges[0][0])
+    #         ordered_edges.insert(0, edges.pop(idx))
+    #     elif ordered_edges[-1][1] in e1:
+    #         idx = e1.index(ordered_edges[-1][1])
+    #         ordered_edges.append(list(reversed(edges.pop(idx))))
+    #     elif ordered_edges[0][0] in e0:
+    #         idx = e0.index(ordered_edges[0][0])
+    #         ordered_edges.insert(0, list(reversed(edges.pop(idx))))
+    #     else:
+    #         edge_collection.append(tuple(ordered_edges))
+    #         idx = -1
+    #         ordered_edges = [edges.pop(idx)]
+    #     e0.pop(idx)
+    #     e1.pop(idx)
+    # # finalize
+    # if len(edge_collection) == 0 and len(edges) == 0:
+    #     edge_collection.append(tuple(ordered_edges))
+    # else:
+    #     edge_collection.append(tuple(ordered_edges))
+    # return edge_collection
+
+
+
+    # import networkx as nx
+
+    # G = nx.DiGraph(edges)
+    # print('start nx call')
+    # print(list(nx.topological_sort(nx.line_graph(G))))
+
+    # graph = Graph()
+    # for e0, e1 in edges:
+    #     graph.add_edge(e0, e1)
+    # vertices_topo_sorted = graph.topological_sort()
+    # edge_tuples = [(u, v) for u, v in zip(vertices_topo_sorted[0:], vertices_topo_sorted[1:])]
+    # print(np.array(edge_tuples))
+    # Create an adjacency matrix to find the next value fast 
+    # adjacency_matrix = {pair[0]: pair for pair in edges}
+    # The first element can be found being the first element of the pair not
+    # present in the second elements
+    # first_key = set(pair[0] for pair in edges).difference(pair[1] for pair in edges)
+
+
+    # while adjacency_matrix:
+    #     # sorted_pairs[-1][1] takes the second element of 
+    #     # the last pair inserted
+    #     try:
+    #         sorted_pairs.append(adjacency_matrix.pop(sorted_pairs[-1][1]))
+    #     except KeyError:
+    #         sorted_pairs.append(adjacency_matrix.pop(list(adjacency_matrix.keys())[0]))
+    #     # print(len(adjacency_matrix))
+    # print(sorted_pairs)
+    # exit()
+
+
+
+
+    # # e0_to_e1 = {e0: (i, e1) for i, (e0, e1) in enumerate(edges)}
+    # # e1_to_e0 = {e1: (i, e0) for i, (e0, e1) in enumerate(edges)}
+    # # e0 = list(e0_to_e1.keys())
+    # # e1 = list(e1_to_e0.keys())
+    # # def index_getter(edge):
+    #     # row_e0 = edge[0]
+    #     row_e1 = edge[1]
+    #     index_pos, _ = e1_to_e0[row_e1]
+    #     return index_pos
+
+        # offset = current_pos + 1
+        # if row_e1 in e0[offset:]:
+        #     return offset + e0[offset:].index(row_e1)
+        # elif 
+        # else:
+        #     raise ValueError(f'{row_e1} not in reamining e0')
+        # elif edge[
+    #         return e0.index(ordered_edges[-1][1])
+    #         ordered_edges.append(edges.pop(idx))
+    #     elif ordered_edges[0][0] in e1:
+    #         idx = e1.index(ordered_edges[0][0])
+    #         ordered_edges.insert(0, edges.pop(idx))
+    #     elif ordered_edges[-1][1] in e1:
+    #         idx = e1.index(ordered_edges[-1][1])
+    #         ordered_edges.append(list(reversed(edges.pop(idx))))
+    #     elif ordered_edges[0][0] in e0:
+    #         idx = e0.index(ordered_edges[0][0])
+    #         ordered_edges.insert(0, list(reversed(edges.pop(idx))))
+        
+
+
+    # edges.sort(key=index_getter)
+    # print(edges)
+    # e0, e1 = [list(t) for t in zip(*edges)]
+    # def sorting_function(row):
+    #     if ordered_edges[-1][1] in e0:
+    #         return e0.index(ordered_edges[-1][1])
+    #         ordered_edges.append(edges.pop(idx))
+    #     elif ordered_edges[0][0] in e1:
+    #         idx = e1.index(ordered_edges[0][0])
+    #         ordered_edges.insert(0, edges.pop(idx))
+    #     elif ordered_edges[-1][1] in e1:
+    #         idx = e1.index(ordered_edges[-1][1])
+    #         ordered_edges.append(list(reversed(edges.pop(idx))))
+    #     elif ordered_edges[0][0] in e0:
+    #         idx = e0.index(ordered_edges[0][0])
+    #         ordered_edges.insert(0, list(reversed(edges.pop(idx))))
+    #     return position
+
+    # edges = sorted(edges, key=sorting_function)
+
+    # print(edges)
+    # if len(edges) == 0:
+    #     return edges
+    # # start ordering the edges into linestrings
+    # edge_collection = list()
+    # ordered_edges = [edges.pop(-1)]
+    # if len(edges) == 0:
+    #     return [tuple(ordered_edges)]
+    # e0, e1 = [list(t) for t in zip(*edges)]
+
+
+
+
+
+# @jit(nopython=True)
+# def edges_to_rings(edges):
+#     if len(edges) == 0:
+#         return edges
+#     edges = np.array(edges)
+#     edges = edges.reshape(int(edges.size / 2), 2)
+#     # start ordering the edges into linestrings
+#     edge_collection = list()
+#     ordered_edges = [edges[-1, :]]
+#     edges = np.delete(edges, -1, 0)
+#     if len(edges) == 0:
+#         return [ordered_edges]
+#     while len(edges) > 0:
+#         # print(ordered_edges[-1][1])
+#         # exit()
+#         print(np.any(np.in1d(edges[:, 0], ordered_edges[-1][1])))
+#         if np.any(np.in1d(edges[:, 0], ordered_edges[-1][1])):
+#             idx = np.where(edges[:, 0] == ordered_edges[-1][1])[0]
+#             ordered_edges.append(edges[idx, :])
+#             edges = np.delete(edges, idx, 0)
+#         elif np.any(np.in1d(edges[:, 1], [ordered_edges[0][0]])):
+#             idx = np.where(edges[:, 1] == ordered_edges[0][0])[0]
+#             ordered_edges.insert(0, edges[idx, :])
+#             edges = np.delete(edges, idx, 0)
+#         elif np.any(np.in1d(edges[:, 1], ordered_edges[-1][1])):
+#             idx = np.where(edges[:, 1] == ordered_edges[-1][1])[0]
+#             ordered_edges.append(edges[idx, :].reversed())
+#             edges = np.delete(edges, idx, 0)
+#         elif np.any(np.in1d(edges[:, 0], ordered_edges[0][0])):
+#             idx = np.where(edges[:, 0] == ordered_edges[0][0])[0]
+#             # idx = e0.index(ordered_edges[0][0])
+#             ordered_edges.insert(0, edges[idx, :].reversed())
+#             edges = np.delete(edges, idx, 0)
+#         else:
+#             edge_collection.append(ordered_edges)
+#             idx = -1
+#             ordered_edges = [edges[idx, :]]
+#             print(ordered_edges)
+#             edges = np.delete(edges, idx, 0)
+#         # e0.pop(idx)
+#         # e1.pop(idx)
+#     # finalize
+#     if len(edge_collection) == 0 and len(edges) == 0:
+#         edge_collection.append(ordered_edges)
+#     else:
+#         edge_collection.append(ordered_edges)
+#     return edge_collection
+
+# @jit(nopython=True)
+# def edges_to_rings(edges):
+#     if len(edges) == 0:
+#         return edges
+#     edges = np.array(edges)
+#     edges = edges.reshape(int(edges.size / 2), 2)
+#     # start ordering the edges into linestrings
+#     edge_collection = list()
+#     ordered_edges = [edges[-1, :]]
+#     edges = np.delete(edges, -1, 0)
+#     if len(edges) == 0:
+#         return [ordered_edges]
+#     while len(edges) > 0:
+#         # print(ordered_edges[-1][1])
+#         # exit()
+#         if np.any(np.in1d(edges[:, 0], ordered_edges[-1][1])):
+#             idx = np.where(edges[:, 0] == ordered_edges[-1][1])[0]
+#             ordered_edges.append(edges[idx, :])
+#             edges = np.delete(edges, idx, 0)
+#         elif np.any(np.in1d(edges[:, 1], ordered_edges[0][0])):
+#             idx = np.where(edges[:, 1] == ordered_edges[0][0])[0]
+#             ordered_edges.insert(0, edges[idx, :])
+#             edges = np.delete(edges, idx, 0)
+#         elif np.any(np.in1d(edges[:, 1], ordered_edges[-1][1])):
+#             idx = np.where(edges[:, 1] == ordered_edges[-1][0])[0]
+#             ordered_edges.append(edges[idx, :].reversed())
+#             edges = np.delete(edges, idx, 0)
+#         elif np.any(np.in1d(edges[:, 0], ordered_edges[0][0])):
+#             idx = np.where(edges[:, 0] == ordered_edges[0][0])[0]
+#             # idx = e0.index(ordered_edges[0][0])
+#             ordered_edges.insert(0, edges[idx, :].reversed())
+#             edges = np.delete(edges, idx, 0)
+#         else:
+#             edge_collection.append(ordered_edges)
+#             idx = -1
+#             ordered_edges = [edges[idx, :]]
+#             edges = np.delete(edges, idx, 0)
+#         # e0.pop(idx)
+#         # e1.pop(idx)
+#     # finalize
+#     if len(edge_collection) == 0 and len(edges) == 0:
+#         edge_collection.append(ordered_edges)
+#     else:
+#         edge_collection.append(ordered_edges)
+#     return edge_collection
+
+
 def edges_to_rings(edges):
+    
+
     if len(edges) == 0:
         return edges
     # start ordering the edges into linestrings
@@ -695,6 +990,42 @@ def edges_to_rings(edges):
     return edge_collection
 
 
+# def edges_to_rings(edges):
+#     if len(edges) == 0:
+#         return edges
+#     # start ordering the edges into linestrings
+#     edge_collection = list()
+#     ordered_edges = [edges.pop(-1)]
+#     if len(edges) == 0:
+#         return [tuple(ordered_edges)]
+#     e0, e1 = [list(t) for t in zip(*edges)]
+#     while len(edges) > 0:
+#         if ordered_edges[-1][1] in e0:
+#             idx = e0.index(ordered_edges[-1][1])
+#             ordered_edges.append(edges.pop(idx))
+#         elif ordered_edges[0][0] in e1:
+#             idx = e1.index(ordered_edges[0][0])
+#             ordered_edges.insert(0, edges.pop(idx))
+#         elif ordered_edges[-1][1] in e1:
+#             idx = e1.index(ordered_edges[-1][1])
+#             ordered_edges.append(list(reversed(edges.pop(idx))))
+#         elif ordered_edges[0][0] in e0:
+#             idx = e0.index(ordered_edges[0][0])
+#             ordered_edges.insert(0, list(reversed(edges.pop(idx))))
+#         else:
+#             edge_collection.append(tuple(ordered_edges))
+#             idx = -1
+#             ordered_edges = [edges.pop(idx)]
+#         e0.pop(idx)
+#         e1.pop(idx)
+#     # finalize
+#     if len(edge_collection) == 0 and len(edges) == 0:
+#         edge_collection.append(tuple(ordered_edges))
+#     else:
+#         edge_collection.append(tuple(ordered_edges))
+#     return edge_collection
+
+
 def sort_rings(index_rings, vertices):
     """Sorts a list of index-rings.
 
@@ -724,10 +1055,18 @@ def sort_rings(index_rings, vertices):
     while len(index_rings) > 0:
         # find all internal rings
         potential_interiors = list()
+        points = list()
         for i, index_ring in enumerate(index_rings):
             e0, e1 = [list(t) for t in zip(*index_ring)]
+            points.append(vertices[e0[0], :])
+
             if path.contains_point(vertices[e0[0], :]):
                 potential_interiors.append(i)
+        # potential_interiors = np.array(index_rings)[
+        #         np.where(path.contains_points(points))]
+        # print(potential_interiors)
+        # exit()
+
         # filter out nested rings
         real_interiors = list()
         for i, p_interior in reversed(list(enumerate(potential_interiors))):
@@ -854,16 +1193,17 @@ def _mesh_interpolate_worker(coords, coords_crs, raster_path, chunk_size):
     raster = Raster(raster_path)
     idxs = []
     values = []
-    for window in raster.iter_windows(chunk_size=chunk_size, overlap=2):
-
+    # for window in raster.iter_windows(chunk_size=chunk_size, overlap=2):
+    for xi, yi, zi in raster:
+        zi = zi[0, :]
         if not raster.crs.equals(coords_crs):
             transformer = Transformer.from_crs(coords_crs, raster.crs, always_xy=True)
             coords[:, 0], coords[:, 1] = transformer.transform(
                 coords[:, 0], coords[:, 1]
             )
-        xi = raster.get_x(window)
-        yi = raster.get_y(window)
-        zi = raster.get_values(window=window)
+        # xi = raster.get_x(window)
+        # yi = raster.get_y(window)
+        # zi = raster.get_values(window=window)
         f = RectBivariateSpline(
             xi,
             np.flip(yi),

@@ -2,31 +2,37 @@ import pathlib
 
 from pyproj import CRS
 
-
 def read(path, crs=None):
     sms2dm = dict()
     with open(pathlib.Path(path), 'r') as f:
         lines = list(map(str.split, f.readlines()))
-        ind = 1
-        while ind < len(lines):
-            line = lines[ind]
-            ind = ind + 1
-            if len(line) == 0:
-                break
-            if line[0] in ['E3T', 'E4Q']:
-                if line[0] not in sms2dm:
-                    sms2dm[line[0]] = {}
-                sms2dm[line[0]].update({
-                    line[1]: line[2:]
-                    })
-            if line[0] == 'ND':
-                if line[0] not in sms2dm:
-                    sms2dm[line[0]] = {}
-                sms2dm[line[0]].update({
-                    line[1]: (
-                        list(map(float, line[2:-1])), float(line[-1])
-                        )
-                    })
+    ind = 1
+    while ind < len(lines):
+        line = lines[ind]
+        ind = ind + 1
+        if len(line) == 0:
+            break
+        if line[0] in ['E3T', 'E4Q']:
+            # sms2dm.setdefault(line[0], {})
+            if line[0] not in sms2dm:
+                sms2dm[line[0]] = {}
+            sms2dm[line[0]].update({
+                line[1]: line[2:]
+                })
+            # sms2dm[line[0]] = {
+            #     line[1]: line[2:]
+            #     }
+        if line[0] == 'ND':
+            if line[0] not in sms2dm:
+                sms2dm[line[0]] = {}
+            sms2dm[line[0]].update({
+                line[1]: (
+                    list(map(float, line[2:-1])), float(line[-1])
+                    )
+                })
+            # sms2dm[line[0]] = { line[1]: (
+            #         list(map(float, line[2:-1])), float(line[-1])
+            #         ) }
     if crs is not None:
         sms2dm['crs'] = CRS.from_user_input(crs)
     return sms2dm

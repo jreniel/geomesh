@@ -20,6 +20,7 @@ from rasterio.enums import Resampling
 from rasterio.fill import fillnodata
 from rasterio.transform import array_bounds
 from rasterio import windows
+from rasterio.io import MemoryFile
 import requests
 from scipy.ndimage import gaussian_filter
 from shapely.geometry import MultiPolygon, Polygon
@@ -54,9 +55,16 @@ class Raster:
         crs: Union[str, CRS] = None,
         chunk_size: int = None,
         overlap: int = None,
+        resampling_factor: float = None,
+        resampling_method = None,
+        bbox: Bbox = None,
+        window: windows.Window = None,
+        clip=None,
+        mask=None,
     ):
         """
-        :param path: Path to the raster.
+        :param path: Path (URI) to the raster.
+
 
         :param crs: Used to specify coordinate reference system for files which are not georeference. If used, it will override
             the referencing in the metadata.
@@ -69,87 +77,165 @@ class Raster:
         :param overlap: Used in conjunction with `chunk_size`, this parameter controls the overlap (in number of pixels)
             between two adjacent processing windows. This is because, for some operations having no overlap may cause the
             combined geometry to be piecewise disconnected.
-        """
-        self.chunk_size = chunk_size
-        self.overlap = overlap
+
+        :param resampling_factor:
+        :param resampling_method:
+        :param window:
+        :param clip:"""
         self._path = path
         self._crs = crs
+        self.chunk_size = chunk_size
+        self.overlap = overlap
+        self.resampling_factor = resampling_factor
+        self.resampling_method = Resampling.bilinear if resampling_method is None else resampling_method
+        if bbox is not None and window is not None:
+            raise ValueError('Arguments `bbox` and `window` are mutually exclusive.')
+        if bbox is not None:
+            with rasterio.open(path) as src:
+                profile = src.profile
+            window = rasterio.windows.from_bounds(
+                    bbox.xmin,
+                    bbox.ymin,
+                    bbox.xmax,
+                    bbox.ymax,
+                    transform=profile['transform'],
+                    # height=None,
+                    # width=None,
+                    # precision=None
+                    )
+            # raise NotImplementedError('bbox argument')
+            # window = Window.from_bounds()
+        self.window = window
+        self.clip = clip
+        self.mask = mask
 
-    def __iter__(self, chunk_size=None, overlap=None):
-        for window in self.iter_windows(chunk_size, overlap):
-            yield window, self.get_window_bounds(window)
+    def iter_windows(self):
+        resampling_factor = 1 if self.resampling_factor is None else self.resampling_factor
+        chunk_size = np.max([self.window.width, self.window.height]) \
+                if self.chunk_size is None else self.chunk_size
+        for window in get_iter_windows(
+            self.window.width,
+            self.window.height,
+            chunk_size=int(chunk_size / resampling_factor),
+            overlap=self.overlap,
+            row_off=self.window.row_off,
+            col_off=self.window.col_off
+            ):
+            yield window
 
-    def get_x(self, window: windows.Window = None) -> np.ndarray:
+    def __iter__(self):
+        """
+        yields raster data for each inner window.
+        """
+        for window in self.iter_windows():
+            yield get_window_data(
+                    self.src,
+                    window,
+                    band=None,
+                    masked=True,
+                    resampling_method=self.resampling_method,
+                    resampling_factor=self.resampling_factor,
+                    clip=self.clip,
+                    mask=self.mask,
+                    )
+            # import contextily as cx
+            # plt.contourf(x, y, z[0,:], alpha=0.5)
+            # cx.add_basemap(
+            #         plt.gca(),
+            #         crs=self.crs,
+            #         # crs=CRS.from_epsg(4326),
+            #         )
+            # plt.show()
+            # exit()
+            # print(x, y, z)
+            # breakpoint()
+            # yield x, y, z
+
+    #     for window in self.iter_windows():
+    #         yield window, self.get_window_bounds(window)
+
+    # def get_adjusted_window(self, window=None, resampling_factor=None):
+    #     window = self.window if window is None else window
+    #     resampling_factor = self.resampling_factor if resampling_factor is None else resampling_factor
+    #     print(resampling_factor)
+    #     if resampling_factor is not None:
+    #         width = int(window.width * resampling_factor)
+    #         height = int(window.height * resampling_factor)
+    #         window =  windows.Window(
+    #             col_off=int(window.col_off * resampling_factor),
+    #             row_off=int(window.row_off * resampling_factor),
+    #             width=int(window.width * resampling_factor),
+    #             height=int(window.height * resampling_factor)
+    #             )
+    #     return window
+
+
+    # def get_array_bounds(self, window=None, resampling_factor=None):
+    #     # window = self.get_adjusted_window(window, resampling_factor)
+    #     return array_bounds(
+    #         window.height,
+    #         window.width,
+    #         rasterio.windows.transform(window, self.transform)
+    #     )
+
+    def get_window_iter_xy(self):
+        for window in self.iter_windows():
+            # print(window)
+            yield get_window_xy(
+                    self.src,
+                    window,
+                    masked=True,
+                    resampling_method=self.resampling_method,
+                    resampling_factor=self.resampling_factor,
+                    # clip=self.clip,
+                    # mask=self.mask,
+                    )
+
+
+    def get_x(self) -> np.ndarray:
         """
         Returns linear space over x-coordinate of raster.
-
-        :param window: A :class:`rasterio.windows.Window` instance, used for sub-sampling the data.
         """
-        window = (
-            windows.Window(0, 0, self.src.shape[1], self.src.shape[0])
-            if window is None
-            else window
-        )
-        if window is not None:
-            assert isinstance(window, windows.Window)
-            width = window.width
-        else:
-            width = self.shape[0]
-        x0, y0, x1, y1 = self.get_window_bounds(window)
-        return np.linspace(x0, x1, width)
+        return np.hstack([x for x, _ in self.get_window_iter_xy()]).flatten()
+
+    def get_y(self, window=None, resampling_factor=None) -> np.ndarray:
+        """
+        Returns linear space over y-coordinate of raster.
+        """
+        # print(len([y for _, y in self.get_window_iter_xy()]))
+        return np.hstack([y for _, y in self.get_window_iter_xy()]).flatten()
 
     def copy(self):
         return Raster(self._tmpfile)
 
-    def get_y(self, window: windows.Window = None) -> np.ndarray:
-        """
-        Returns linear space over y-coordinate of raster.
-
-        :param window: A :class:`rasterio.windows.Window` instance, used for sub-sampling the data.
-        """
-        window = (
-            windows.Window(0, 0, self.src.shape[1], self.src.shape[0])
-            if window is None
-            else window
-        )
-        if window is not None:
-            assert isinstance(window, windows.Window)
-            height = window.height
-        else:
-            height = self.shape[1]
-        x0, y0, x1, y1 = self.get_window_bounds(window)
-        return np.linspace(y1, y0, height)
-
-    def get_xy(self, window: windows.Window = None) -> np.ndarray:
+    def get_xy(self, window=None, resampling_factor=None) -> np.ndarray:
         """
         Returns a scattered list of coordinate tuples in the form of an array [M x 2]
         where M = :attr:`geomesh.Raster.height` * :attr:`geomesh.Raster.width`.
-
-        :param window: A :class:`rasterio.windows.Window` instance, used for sub-sampling the data.
         """
-        x, y = np.meshgrid(self.get_x(window), self.get_y(window))
+        x, y = np.meshgrid(
+                self.get_x(),
+                self.get_y()
+                )
         return np.vstack([x.flatten(), y.flatten()]).T
 
-    def get_values(
-        self, window: windows.Window = None, band: int = None, **kwargs
-    ) -> np.ndarray:
-        """
-        Returns a :class:`np.ndarray` of band values. Return array may be multidimensional.
+    # def get_values(
+    #     self,
+    #     window=None,
+    #     band=1,
+    #     resampling_factor=None,
+    #     resampling_method=None,
+    # ) -> np.ndarray:
+    #     """
+    #     Returns a :class:`np.ndarray` of band values. Return array may be multidimensional.
 
-        :param window: A :class:`rasterio.windows.Window` instance, used for sub-sampling the data.
-        :param band: Used for selecting band (first band is 1). If omitted, will return a multidimensional array containing
-            all raster bands (e.g. will load all the data into RAM).
-        :param kwargs: Passed directly to :func:`rasterio.Dataset.read`.
-        """
-        i = 1 if band is None else band
-        window = (
-            windows.Window(0, 0, self.src.shape[1], self.src.shape[0])
-            if window is None
-            else window
-        )
-        if window is not None:
-            assert isinstance(window, windows.Window)
-        return self.src.read(i, window=window, **kwargs)
+    #     :param window: A :class:`rasterio.windows.Window` instance, used for sub-sampling the data.
+    #     :param band: Used for selecting band (first band is 1). If omitted, will return a multidimensional array containing
+    #         all raster bands (e.g. will load all the data into RAM).
+    #     :param kwargs: Passed directly to :func:`rasterio.Dataset.read`.
+    #     """
+    #     x, y, z = self.get_window_data(window=window, resampling_factor=resampling_factor, resampling_method=resampling_method, band=band)
+    #     return z
 
     def get_xyz(self, window: windows.Window = None, band: int = 1) -> np.ndarray:
         """
@@ -165,7 +251,7 @@ class Raster:
 
     def get_bbox(
         self,
-        crs: Union[str, CRS] = None,
+        dst_crs: Union[str, CRS] = None,
     ) -> Bbox:
         """
         Returns the bounding box of the data transform.
@@ -175,7 +261,7 @@ class Raster:
         """
         xmin, xmax = np.min(self.x), np.max(self.x)
         ymin, ymax = np.min(self.y), np.max(self.y)
-        crs = self.crs if crs is None else crs
+        crs = self.crs if dst_crs is None else dst_crs
         if crs is not None:
             if not self.crs.equals(crs):
                 transformer = Transformer.from_crs(self.crs, crs, always_xy=True)
@@ -188,7 +274,6 @@ class Raster:
     def make_plot(
         self,
         band=1,
-        window=None,
         axes=None,
         vmin=None,
         vmax=None,
@@ -206,15 +291,26 @@ class Raster:
         Generates a "standard" topobathy plot.
         """
         logger.debug(f"Raster.make_plot: Read raster values for band {band}")
-        values = self.get_values(band=band, masked=True, window=window)
+        # could also be made to iterate over the windows, but is it worth it?
+        x, y, values = get_window_data(
+                    self.src,
+                    self.window,
+                    band=band,
+                    masked=True,
+                    resampling_method=self.resampling_method,
+                    resampling_factor=self.resampling_factor,
+                    clip=self.clip,
+                    mask=self.mask,
+                    )
+        # values = self.get_values()
         vmin = np.min(values) if vmin is None else float(vmin)
         vmax = np.max(values) if vmax is None else float(vmax)
         kwargs.update(get_topobathy_kwargs(values, vmin, vmax))
         col_val = kwargs.pop("col_val")
         logger.debug(f"Generating contourf plot with {levels}")
         axes.contourf(
-            self.get_x(window),
-            self.get_y(window),
+            x,
+            y,
             values,
             vmin=vmin,
             vmax=vmax,
@@ -279,7 +375,9 @@ class Raster:
         kwargs = self.src.meta.copy()
         band_id = kwargs["count"] + 1
         kwargs.update(count=band_id)
-        tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
+        tmpfile = tempfile.NamedTemporaryFile(
+                dir=os.getenv('GEOMESH_TEMPDIR')
+                )
         with rasterio.open(tmpfile.name, "w", **kwargs) as dst:
             for i in range(1, self.src.count + 1):
                 dst.write_band(i, self.src.read(i))
@@ -292,7 +390,9 @@ class Raster:
         Wrapper to rasterio's  fillnodata function.
         """
         # A parallelized version is presented here: https://github.com/basaks/rasterio/blob/master/examples/fill_large_raster.py
-        tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
+        tmpfile = tempfile.NamedTemporaryFile(
+                dir=os.getenv('GEOMESH_TEMPDIR')
+                )
         with rasterio.open(tmpfile.name, "w", **self.src.meta.copy()) as dst:
             for window in self.iter_windows():
                 dst.write(
@@ -308,7 +408,9 @@ class Raster:
         :param kwargs: Passed directly as arguments to :func:`scipy.ndimage.gaussian_filter`
         """
         meta = self.src.meta.copy()
-        tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
+        tmpfile = tempfile.NamedTemporaryFile(
+                dir=os.getenv('GEOMESH_TEMPDIR')
+                )
         with rasterio.open(tmpfile.name, "w", **meta) as dst:
             for i in range(1, self.src.count + 1):
                 outband = self.src.read(i)
@@ -330,7 +432,9 @@ class Raster:
         _kwargs = self.src.meta.copy()
         _kwargs.update(kwargs)
         out_images, out_transform = mask(self._src, geometry)
-        tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
+        tmpfile = tempfile.NamedTemporaryFile(
+                dir=os.getenv('GEOMESH_TEMPDIR')
+                )
         with rasterio.open(tmpfile.name, "w", **_kwargs) as dst:
             if band is None:
                 for j in range(1, self.src.count + 1):
@@ -394,7 +498,10 @@ class Raster:
                 "height": height,
             }
         )
-        tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
+        tmpfile = tempfile.NamedTemporaryFile(
+
+                dir=os.getenv('GEOMESH_TEMPDIR')
+                )
 
         with rasterio.open(tmpfile.name, "w", **kwargs) as dst:
             for i in range(1, self.src.count + 1):
@@ -431,7 +538,9 @@ class Raster:
                 f"Argument resampling_method must be of type {Resampling}, not type {type(resampling_method)}"
             )
 
-        tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
+        tmpfile = tempfile.NamedTemporaryFile(
+                dir=os.getenv('GEOMESH_TEMPDIR')
+                )
         # resample data to target shape
         width = int(self.src.width * scaling_factor)
         height = int(self.src.height * scaling_factor)
@@ -454,62 +563,57 @@ class Raster:
                 dst.write_band(i, self.src.read(i))
                 dst.update_tags(i, **self.src.tags(i))
 
-    def clip(self, geom: Union[Polygon, MultiPolygon]):
-        """
-        Masks the raster for values outside of input polygon/multipolygon
+    # def clip(self, geom: Union[Polygon, MultiPolygon]):
+    #     """
+    #     Masks the raster for values outside of input polygon/multipolygon
 
-        :param geom: Input polygon or multipolygo used for masking.
-        """
+    #     :param geom: Input polygon or multipolygo used for masking.
+    #     """
 
-        if isinstance(geom, Polygon):
-            geom = MultiPolygon([geom])
-        # TODO: rasterio warning: py.warnings WARNING: /home/jreniel/thesis/.conda_env/lib/python3.9/site-packages/rasterio/features.py:284: ShapelyDeprecationWarning: Iteration over multi-part geometries is deprecated and will be removed in Shapely 2.0. Use the `geoms` property to access the constituent parts of a multi-part geometry.
-        # for index, item in enumerate(shapes):
-        out_image, out_transform = rasterio.mask.mask(self.src, geom, crop=True)
-        out_meta = self.src.meta.copy()
-        out_meta.update(
-            {
-                "driver": "GTiff",
-                "height": out_image.shape[1],
-                "width": out_image.shape[2],
-                "transform": out_transform,
-            }
-        )
-        tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
-        with rasterio.open(tmpfile.name, "w", **out_meta) as dest:
-            dest.write(out_image)
-        self._tmpfile = tmpfile
+    #     if isinstance(geom, Polygon):
+    #         geom = MultiPolygon([geom])
+    #     # TODO: rasterio warning: py.warnings WARNING: /home/jreniel/thesis/.conda_env/lib/python3.9/site-packages/rasterio/features.py:284: ShapelyDeprecationWarning: Iteration over multi-part geometries is deprecated and will be removed in Shapely 2.0. Use the `geoms` property to access the constituent parts of a multi-part geometry.
+    #     # for index, item in enumerate(shapes):
+    #     try:
+    #         out_image, out_transform = rasterio.mask.mask(self.src, geom, crop=True)
+    #     except ValueError as e:
+    #         if 'Input shapes do not overlap raster.' in str(e):
+    #             return
+    #         else:
+    #             raise
+    #     out_meta = self.src.meta.copy()
+    #     out_meta.update(
+    #         {
+    #             "driver": "GTiff",
+    #             "height": out_image.shape[1],
+    #             "width": out_image.shape[2],
+    #             "transform": out_transform,
+    #         }
+    #     )
+    #     tmpfile = tempfile.NamedTemporaryFile(prefix=str(self.tmpdir))
+    #     with rasterio.open(tmpfile.name, "w", **out_meta) as dest:
+    #         dest.write(out_image)
+    #     self._tmpfile = tmpfile
 
-    def iter_windows(self, chunk_size=0, overlap=2):
-        chunk_size = chunk_size if self.chunk_size is None else self.chunk_size
-        overlap = overlap if self.overlap is None else overlap
+    # def iter_windows(self):
+    #     for window in get_iter_windows(
+    #         self.window.width,
+    #         self.window.height,
+    #         chunk_size=self.chunk_size,
+    #         overlap=self.overlap,
+    #         row_off=self.window.row_off,
+    #         col_off=self.window.col_off):
+    #         yield window
 
-        if chunk_size in [0, None, False]:
-            yield rasterio.windows.Window(0, 0, self.width, self.height)
-            return
+    # def get_window_bounds(self, window=None):
+    #     window = self.window if window is None else window
+    #     return array_bounds(
+    #         window.height, window.width, self.get_window_transform(window)
+    #     )
 
-        for window in get_iter_windows(self.width, self.height, chunk_size, overlap):
-            yield window
-
-    def get_window_data(self, window, masked=True, band=None):
-        x0, y0, x1, y1 = self.get_window_bounds(window)
-        x = np.linspace(x0, x1, window.width)
-        y = np.linspace(y1, y0, window.height)
-        if band is not None:
-            data = self.src.read(band, masked=masked, window=window)
-        else:
-            data = self.src.read(masked=masked, window=window)
-        return x, y, data
-
-    def get_window_bounds(self, window):
-        return array_bounds(
-            window.height, window.width, self.get_window_transform(window)
-        )
-
-    def get_window_transform(self, window):
-        if window is None:
-            return
-        return windows.transform(window, self.transform)
+    # def get_window_transform(self, window=None):
+    #     window = self.window if window is None else window
+    #     windows.transform(window, self.transform)
 
     @property
     def x(self):
@@ -537,7 +641,7 @@ class Raster:
 
     @property
     def is_masked(self):
-        for window in self.iter_windows(self.chunk_size):
+        for window in self.iter_windows():
             if self.src.nodata in self.src.read(window=window):
                 return True
         return False
@@ -647,15 +751,15 @@ class Raster:
 
     @property
     def width(self):
-        return self.src.width
+        return self.window.width
 
     @property
     def dx(self):
-        return self.src.transform[0]
+        return self.transform[0]
 
     @property
     def dy(self):
-        return -self.src.transform[4]
+        return -self.transform[4]
 
     @property
     def crs(self) -> CRS:
@@ -713,7 +817,14 @@ class Raster:
 
     @property
     def transform(self):
-        return self.src.transform
+        window = self.window
+        resampling_factor = self.resampling_factor
+        transform = self.src.transform
+        if resampling_factor is not None:
+            width = int(window.width * resampling_factor)
+            height = int(window.height * resampling_factor)
+            transform = transform * transform.scale((window.width / width), (window.height / height))
+        return transform
 
     @property
     def dtypes(self):
@@ -751,26 +862,239 @@ class Raster:
 
     @overlap.setter
     def overlap(self, overlap: Union[int, None]):
-        self._overlap = overlap
+        self._overlap = 0 if overlap is None else overlap
+        
+    @property
+    def resampling_factor(self) -> Union[float, None]:
+        return self._resampling_factor
 
+    @resampling_factor.setter
+    def resampling_factor(self, resampling_factor: Union[float, None]):
+        if resampling_factor is not None:
+            resampling_factor = float(resampling_factor)
+            if not (resampling_factor > 0 and resampling_factor <=1):
+                raise ValueError('Argument `resampling_factor` must be >0 and <= 1 or None.')
+        self._resampling_factor = resampling_factor
+
+    @property
+    def resampling_method(self) -> Resampling:
+        return self._resampling_method
+
+    @resampling_method.setter
+    def resampling_method(self, resampling_method: Union[Resampling, int, None]):
+        if resampling_method is None:
+            resampling_method = Resampling.bilinear
+        if not isinstance(resampling_method, Resampling):
+            resampling_method = Resampling(resampling_method)
+        self._resampling_method = resampling_method
+
+    @property
+    def window(self) -> windows.Window:
+        return self._window
+
+    @window.setter
+    def window(self, window: Union[windows.Window, None]):
+        if window is None:
+            window = windows.Window(0, 0, self.src.width, self.src.height)
+        if not isinstance(window, windows.Window):
+            raise ValueError(f'Argument window must be of type {windows.Window} or None, not {window}.')
+        self._window = window.intersection(windows.Window(0, 0, self.src.width, self.src.height))
+
+    @property
+    def clip(self):
+        return self._clip
+
+    @clip.setter
+    def clip(self, clip):
+        if not isinstance(clip, (type(None), Polygon, MultiPolygon)):
+            raise ValueError(f'Argument `clip` must be a Polyon, MultiPolygon or None, but got {clip}.')
+        if isinstance(clip, Polygon):
+            clip = MultiPolygon([clip])
+        self._clip = clip
+
+    @property
+    def mask(self):
+        return self._mask
+
+    @mask.setter
+    def mask(self, mask):
+        if not isinstance(mask, (type(None), Polygon, MultiPolygon)):
+            raise ValueError(f'Argument `mask` must be a Polyon, MultiPolygon or None, but got {mask}.')
+        if isinstance(mask, Polygon):
+            mask = MultiPolygon([mask])
+        self._mask = mask
+
+
+
+def get_window_data(src, window, band=1, masked=True, resampling_method=None, resampling_factor=None, clip=None, mask=None):
+
+    resampling_method = resampling_method if resampling_method is None else resampling_method
+    resampling_factor = resampling_factor if resampling_factor is None else resampling_factor
+
+    out_shape = (window.height, window.width)
+    if resampling_factor is not None:
+        width = window.width * resampling_factor
+        height = window.height * resampling_factor
+        out_shape = (height, width)
+
+    transform = src.transform
+    out_shape = (
+        int(np.around(out_shape[0])),
+        int(np.around(out_shape[1])),
+            )
+    if band is not None:
+        data = src.read(
+            band,
+            out_shape=out_shape,
+            resampling=resampling_method,
+            window=window,
+            masked=masked,
+            )
+    else:
+        data = src.read(
+            out_shape=out_shape,
+            resampling=resampling_method,
+            window=window,
+            masked=masked,
+            )
+
+    if resampling_factor is not None:
+        transform = transform * transform.scale((window.width / width), (window.height / height))
+        window = windows.Window(
+            col_off=window.col_off * resampling_factor,
+            row_off=window.row_off * resampling_factor,
+            width=window.width * resampling_factor,
+            height=window.height * resampling_factor
+            )
+
+    x0, y0, x1, y1 = array_bounds(
+        window.height,
+        window.width,
+        rasterio.windows.transform(window, transform)
+    )
+
+    x = np.linspace(x0, x1, out_shape[1])
+    y = np.linspace(y1, y0, out_shape[0])
+
+    if clip is not None:
+        with MemoryFile() as memfile:
+            with memfile.open(
+                    driver='GTiff',
+                    height=out_shape[0],
+                    width=out_shape[1],
+                    count=1,
+                    dtype=rasterio.int16,
+                    crs=src.crs,
+                    # transform=rasterio.transform.from_bounds(x0, y0, x1, y1, out_shape[0], out_shape[1]),
+                    transform=rasterio.windows.transform(window, transform),
+                    ) as dataset:
+                if not hasattr(clip, "__iter__"):
+                    clip = [clip]
+                new_mask, _, _ = rasterio.mask.raster_geometry_mask(dataset, clip, crop=False)
+        data.mask = np.logical_or(data.mask, new_mask)
+
+    if mask is not None:
+        with MemoryFile() as memfile:
+            with memfile.open(
+                    driver='GTiff',
+                    height=out_shape[0],
+                    width=out_shape[1],
+                    count=1,
+                    dtype=rasterio.int16,
+                    crs=src.crs,
+                    # transform=rasterio.transform.from_bounds(x0, y0, x1, y1, out_shape[0], out_shape[1]),
+                    transform=rasterio.windows.transform(window, transform),
+                    ) as dataset:
+                if not hasattr(mask, "__iter__"):
+                    mask = [mask]
+                data_mask, _, _ = rasterio.mask.raster_geometry_mask(
+                        dataset,
+                        mask,
+                        crop=False,
+                        invert=True,
+                        # pad=True,
+                        # pad_width=100,
+                        # all_touched=True,
+                        )
+        data.mask = np.logical_or(data.mask, data_mask)
+
+
+    return x, y, data
+
+
+def get_window_xy(src, window, masked=True, resampling_method=None, resampling_factor=None):
+
+    resampling_method = resampling_method if resampling_method is None else resampling_method
+    resampling_factor = resampling_factor if resampling_factor is None else resampling_factor
+
+    out_shape = (window.height, window.width)
+    # print(resampling_factor)
+    # exit()
+    if resampling_factor is not None:
+        width = window.width * resampling_factor
+        height = window.height * resampling_factor
+        out_shape = (height, width)
+
+    transform = src.transform
+    out_shape = (
+        int(np.around(out_shape[0])),
+        int(np.around(out_shape[1])),
+            )
+
+    if resampling_factor is not None:
+        transform = transform * transform.scale((window.width / width), (window.height / height))
+        window = windows.Window(
+            col_off=window.col_off * resampling_factor,
+            row_off=window.row_off * resampling_factor,
+            width=window.width * resampling_factor,
+            height=window.height * resampling_factor
+            )
+
+    x0, y0, x1, y1 = array_bounds(
+        window.height,
+        window.width,
+        rasterio.windows.transform(window, transform)
+    )
+
+    x = np.linspace(x0, x1, out_shape[1])
+    y = np.linspace(y1, y0, out_shape[0])
+
+    return x, y
 
 def get_iter_windows(
         width,
         height,
-        chunk_size=0,
+        chunk_size=None,
         overlap=0,
+        row_off=0,
+        col_off=0,
 ):
-    n_win_h = int(np.ceil(height / chunk_size))
-    n_win_w = int(np.ceil(width / chunk_size))
-    for i in range(n_win_h):
-        for j in range(n_win_w):
-            off_h = i * chunk_size
-            off_w = j * chunk_size
-            h = chunk_size + overlap
-            h = h - (off_h + h) % height if off_h + h > height else h
-            w = chunk_size + overlap
-            w = w - (off_w + w) % width if off_w + w > width else w
-            yield windows.Window(off_w, off_h, w, h)
+    blockxsize = width if chunk_size in [None, 0] else chunk_size
+    blockysize = height if chunk_size in [None, 0] else chunk_size
+    for i in range(int(np.ceil(height / blockysize))):
+        row_start = (i * blockysize) + row_off
+        row_stop = row_start + blockysize
+        window_row_start = row_start - overlap
+        window_row_stop = row_stop + overlap
+        if window_row_start < 0:
+            window_row_start = 0
+        if window_row_stop > row_off + height:
+            window_row_stop = row_off + height
+        for j in range(int(np.ceil(width / blockxsize))):
+            col_start = (j * blockxsize) + col_off
+            col_stop = col_start + blockxsize
+            window_col_start = col_start - overlap
+            window_col_stop = col_stop + overlap
+            if window_col_start < 0:
+                window_col_start = 0
+            if window_col_stop > col_off + width:
+                window_col_stop = col_off + width
+
+            yield rasterio.windows.Window.from_slices(
+                (window_row_start, window_row_stop),
+                (window_col_start, window_col_stop),
+                )
+
 
 
 # def get_multipolygon_from_axes(ax):

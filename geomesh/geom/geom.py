@@ -9,7 +9,7 @@ from .raster import RasterGeom
 from geomesh.mesh.mesh import Mesh
 from geomesh.raster import Raster
 
-from geomesh.geom.shapely import PolygonGeom, MultiPolygonGeom
+from geomesh.geom.shapely_geom import PolygonGeom, MultiPolygonGeom
 
 
 class GeomInputType(Enum):

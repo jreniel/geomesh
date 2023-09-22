@@ -10,10 +10,11 @@ class BaseHfun(ABC):
         '''Abstract method to generate hfun object. Must contain a dst_crs kwarg'''
 
     @property
-    def values(self):
-        return self.msh_t().value
+    @abstractmethod
+    def crs(self):
+        '''Coordinate reference system information.'''
 
     @property
     @abstractmethod
-    def crs(self):
-         '''Coordinate reference system information.'''
+    def values(self):
+        '''Values of hfun.'''

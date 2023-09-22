@@ -34,6 +34,7 @@ def get_topobathy_kwargs(values, vmin, vmax, colors=256):
         "norm": norm,
         "levels": levels,
         "col_val": col_val,
+        "colors": None,
         # 'extend': 'both'
     }
 

@@ -17,6 +17,7 @@ class HfunInputType(Enum):
     EuclideanMesh2D = MeshHfun
     Raster = RasterHfun
     RasterTileIndex = RasterTileIndexHfun
+    jigsaw_msh_t = MeshHfun
 
     @classmethod
     def _missing_(cls, name):

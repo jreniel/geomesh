@@ -6,14 +6,14 @@ import sys
 
 import matplotlib as mpl
 
-mpl.rcParams["agg.path.chunksize"] = 10000
-
 from .geom.geom import Geom
 from .hfun.hfun import Hfun
 from .raster import Raster
 from .driver import JigsawDriver
 from .mesh import Mesh
 
+
+mpl.rcParams["agg.path.chunksize"] = 10000
 
 try:
     import jigsawpy  # type: ignore[import]  # noqa: F401
@@ -34,14 +34,16 @@ except OSError as e:
 
 if util.find_spec("colored_traceback") is not None:
     import colored_traceback  # type: ignore[import]
-
     colored_traceback.add_hook(always=True)
 
 # tmpdir = str(pathlib.Path(tempfile.gettempdir()+'/geomesh'))+'/'
 # os.makedirs(tmpdir, exist_ok=True)
 
-import warnings
-warnings.filterwarnings("ignore", ".*will be removed in Shapely 2.0. Use the `geoms` property to access the constituent parts of a multi-part geometry.")
+# warnings.filterwarnings(
+#     "ignore",
+#     ".*will be removed in Shapely 2.0. Use the `geoms` property to access the constituent parts of a multi-part geometry."
+#     )
+
 
 
 __all__ = [
