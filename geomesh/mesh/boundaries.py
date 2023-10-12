@@ -116,25 +116,16 @@ class Boundaries:
         ocean_boundaries = []
         land_boundaries = []
         interior_boundaries = []
-        cnt = 0
+        # cnt = 0
         tree = KDTree(self.hgrid.coord)
-        the_gdf = self.hgrid.hull()
-        print(the_gdf)
-        import matplotlib.pyplot as plt
-        the_gdf.plot(ax=plt.gca())
-        plt.show(block=False)
-        breakpoint()
+
         for rings in self.hgrid.hull.rings.sorted().values():
-            print(rings)
             ring = rings['exterior']
             edge_tag = np.full(ring.shape, 0)
             edge_tag[np.where(values[ring[:, 0]] <= threshold)[0], 0] = -1
             edge_tag[np.where(values[ring[:, 1]] <= threshold)[0], 1] = -1
             edge_tag[np.where(values[ring[:, 0]] > threshold)[0], 0] = 1
             edge_tag[np.where(values[ring[:, 1]] > threshold)[0], 1] = 1
-            # sort boundary edges
-            # ocean_boundary = list()
-            # land_boundary = list()
             ocean_edges = list()
             land_edges = list()
             from shapely.geometry import Point
@@ -149,6 +140,27 @@ class Boundaries:
                 ocean_linestrings = MultiLineString([ocean_linestrings])
             for ocean_linestring in ocean_linestrings.geoms:
                 coords = np.array(ocean_linestring.coords)
+
+
+                # Note: If the LineString is a closed loop, SCHISM won't allow it (why not? it should be possible!)
+                # but we are going to fake it by forcing one edge to be land_edge and the rest remain as ocean_boundaries
+                # Maybe the user wants a circular open boundary!
+                if coords[0].tolist() == coords[-1].tolist():
+                    print("Detected a looped ocean_linestring:", ocean_linestring)
+                    # Create land edge using the first two coordinates                                                   
+                    print(f"{coords=}")
+                    # land_edge_coords = [coords[-2], coords[0]]
+                    land_edge_coords = [coords[0], coords[-2]]
+                    land_edges.append(LineString([Point(x, y) for x, y in land_edge_coords]))
+                    print("Created land edge from loop:", land_edges[-1])
+                    print(f"{land_edge_coords=}")
+                    # Create ocean linestring using all but the last coordinate (to avoid duplication with the first)    
+                    # coords = np.concatenate([coords[:1], coords[2:-1]])
+                    coords = coords[:-1]
+                    print(f"{coords=}")
+                    ocean_linestring = LineString(coords)
+                    print("Created open boundary from loop:", ocean_linestring)
+
                 if coords.shape[0] < min_open_bound_length:
                     land_edges.append(
                             # np.fliplr(bnd)
@@ -159,52 +171,40 @@ class Boundaries:
                 index_id = list(map(self.hgrid.nodes.get_id_by_index, ii))
                 ocean_boundaries.append(
                             {
-                                "id": str(cnt + 1),  # hacking it
+                                # "id": len(ocean_boundaries)+1,  # hacking it
                                 "index_id": index_id,
                                 "indexes": ii,
                                 "geometry": ocean_linestring,
                                 "btype": 'ocean',
                             }
                         )
-                cnt += 1
+                # cnt += 1
 
             land_linestrings = linemerge(land_edges)
             if isinstance(land_linestrings, LineString):
                 land_linestrings = MultiLineString([land_linestrings])
             for land_linestring in land_linestrings.geoms:
                 _, ii = tree.query(land_linestring.coords)
-                # bnd = np.vstack([ii, np.roll(ii, -1)]).T
-                # e0, e1 = [list(t) for t in zip(*bnd)]
-                # indexes = np.hstack([e0, e1[-1]])
-                # index_id = list(map(self.hgrid.nodes.get_id_by_index, indexes))
                 index_id = list(map(self.hgrid.nodes.get_id_by_index, ii))
-                # coords = self.hgrid.coord[indexes]
                 land_boundaries.append(
                             {
-                                "id": str(cnt + 1),
+                                # "id": str(cnt + 1),
                                 "ibtype": land_ibtype,
                                 "index_id": index_id,
-                                # "indexes": indexes,
                                 "indexes": ii,
-                                # "geometry": LineString(coords),
                                 "geometry": land_linestring,
                                 "btype": 'land',
                             }
                         )
-                cnt += 1
+                # cnt += 1
 
             for interior in rings['interiors']:
                 indexes, _1 = [list(t) for t in zip(*interior)]
-                # if self.hgrid.signed_polygon_area(self.hgrid.coord[e0, :]) < 0:
-                #     e0 = list(reversed(e0))
-                #     e1 = list(reversed(e1))
-                # indexes = np.hstack([e0, e1[-1]])
                 index_id = list(map(self.hgrid.nodes.get_id_by_index, indexes))
-                # index_id.append(e0[0])
                 coords = self.hgrid.coord[indexes]
                 interior_boundaries.append(
                             {
-                                "id": str(cnt + 1),
+                                # "id": str(cnt + 1),
                                 "ibtype": interior_ibtype,
                                 "index_id": index_id,
                                 "indexes": indexes,
@@ -212,12 +212,11 @@ class Boundaries:
                                 'btype': 'interior',
                             }
                         )
-                cnt += 1
+                # cnt += 1
 
         # to overcome out-of-memory array allocation bug in fortran side
         if len(interior_boundaries) > 0:
-            land_boundaries, interior_boundaries = self._optimize_fortran_boundary_allocation_array(
-                    ocean_boundaries, land_boundaries, interior_boundaries)
+            land_boundaries = self._optimize_fortran_boundary_allocation_array(land_boundaries, interior_boundaries)
         self.open = gpd.GeoDataFrame(
             ocean_boundaries, crs=self.hgrid.crs if len(ocean_boundaries) > 0 else None
         )
@@ -245,7 +244,7 @@ class Boundaries:
 
         # self.hgrid.boundaries = self
 
-    def _optimize_fortran_boundary_allocation_array(self, ocean_boundaries, land_boundaries, interior_boundaries):
+    def _optimize_fortran_boundary_allocation_array(self, land_boundaries, interior_boundaries):
         """
         Q: Why is this function necessary?
         A: Fortran will allocate the boundary array as:
@@ -260,10 +259,6 @@ class Boundaries:
         Note: ocean_boundaries are only used to make sure the boundary id's are continuous.
         """
         mnlnd_global_optimal = np.max([len(intb["indexes"]) for intb in interior_boundaries])
-        if len(ocean_boundaries) > 0:
-            cnt = int(ocean_boundaries[-1]['id']) - 1
-        else:
-            cnt = 0
         new_land_boundaries = []
         _any_adjusted = False
         for land_boundary in land_boundaries:
@@ -283,25 +278,15 @@ class Boundaries:
                     # _split_index_ids = split_index_ids[i]
                     land_linestring = LineString(self.hgrid.coord[_split_indexes, :])
                     new_land_boundaries.append({
-                                    "id": str(cnt + 1),
+                                    # "id": str(cnt + 1),
                                     "ibtype": land_boundary['ibtype'],
                                     "index_id": _split_index_ids,
                                     "indexes": _split_indexes,
                                     "geometry": land_linestring,
                                     "btype": 'land',
                                 })
-                    cnt += 1
+                    # cnt += 1
             else:
-                # boundary doesn't need splitting
                 new_land_boundaries.append(land_boundary)
-        if _any_adjusted:
-            new_interior_boundaries = []
-            for interior_boundary in interior_boundaries:
-                int_bd = interior_boundary.copy()
-                int_bd.update({'id': str(cnt+1)})
-                new_interior_boundaries.append(int_bd)
-                cnt += 1
-        else:
-            new_interior_boundaries = interior_boundaries
 
-        return new_land_boundaries, new_interior_boundaries
+        return new_land_boundaries

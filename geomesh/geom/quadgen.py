@@ -1327,15 +1327,94 @@ def manually_triangulate(linear_ring):
     return triangles
 
 
+
+def get_intersecting_edges(group, mesh_gdf):
+    # Extracting unique indexes
+    unique_indexes = group['index_right'].unique()
+    intersecting_edges = set()
+    for index in unique_indexes:
+        # Extracting the corresponding polygon from mesh_gdf
+        tria = mesh_gdf.loc[mesh_gdf.index == index, 'geometry'].iloc[0]
+
+        # Checking each polygon in group
+        for _, row in group.loc[group.index.unique()].iterrows():
+            # non_conforming_quad_edges = []
+            quad = row['geometry']
+            quad_edges = [
+                LineString([quad.exterior.coords[i], quad.exterior.coords[(i+1)%4]])
+                for i in range(4)
+            ]
+            for quad_edge in quad_edges:
+                # breakpoint()
+                tria_to_quad_edge_intersection = tria.intersection(quad_edge)
+                # only these three conditions matter for this collection:
+                if tria_to_quad_edge_intersection.is_empty:
+                    continue
+                elif isinstance(tria_to_quad_edge_intersection, LineString):
+                    intersecting_edges.add(quad_edge)
+                elif isinstance(tria_to_quad_edge_intersection, Point):
+                    # if the intersection is a Point, we need to check
+                    tria_points_intersect = 0
+                    for tria_point in tria.exterior.coords[:-1]:
+                        if Point(tria_point).buffer(np.finfo(np.float32).eps).intersects(quad_edge):
+                            tria_points_intersect += 1
+                        if tria_points_intersect > 1:
+                            intersecting_edges.add(quad_edge)
+    return list(intersecting_edges)
+
+def get_linear_ring_from_trias_and_edges(trias_to_drop, intersecting_edges) -> LinearRing:
+    edges_merged = ops.linemerge(intersecting_edges)
+    missing_points = set()
+    for tria in trias_to_drop.geometry:
+        for tria_point in tria.exterior.coords[:-1]:
+            if not Point(tria_point).buffer(np.finfo(np.float32).eps).intersects(edges_merged):
+                missing_points.add(tria_point)
+    if isinstance(edges_merged, LineString):
+        reference_point = Point(edges_merged.coords[-1])
+        # Function to measure distance to the reference point
+        def distance_to_reference(p):
+            return reference_point.distance(Point(p))
+        # Sort the missing points based on their distance to the reference point
+        missing_points_sorted = sorted(missing_points, key=distance_to_reference)
+        merged_coords = list(edges_merged.coords) + missing_points_sorted
+        return LinearRing(merged_coords)
+    elif isinstance(edges_merged, MultiLineString):
+        all_coords = []
+        remaining_lines = list(edges_merged.geoms)
+
+        # Start with the first line segment
+        current_line = remaining_lines.pop(0)
+        reference_point = Point(current_line.coords[-1])
+
+        # Function to measure distance to the reference point
+        def distance_to_reference(p):
+            return reference_point.distance(Point(p))
+
+        # Sort the missing points based on their distance to the reference point
+        missing_points_sorted = sorted(missing_points, key=distance_to_reference)
+
+        all_coords.extend(current_line.coords)
+        all_coords.extend(missing_points_sorted)
+
+        while remaining_lines:
+            # Find the next closest line segment
+            next_line_idx = min(range(len(remaining_lines)), key=lambda i: reference_point.distance(Point(remaining_lines[i].coords[0])))
+            next_line = remaining_lines.pop(next_line_idx)
+            all_coords.extend(next_line.coords)
+            reference_point = Point(next_line.coords[-1])
+
+        return LinearRing(all_coords)
+    else:
+        raise NotImplementedError(f"Unreachable: Expected LineString or MultiLineString but got {type(edges_merged)=}")
+
+
+
 class Quads:
 
     def __init__(self, gdf: gpd.GeoDataFrame):
         self.quads_gdf = gdf
 
     def __call__(self, msh_t: jigsaw_msh_t) -> jigsaw_msh_t:
-        # properly, we should make a jigsaw_msh_t a Copy type
-        # currently, if the input msh_t doesn't have any of the properties, it will crash
-        # but then again, without this properties there would be nothing to do.
         omsh_t = jigsaw_msh_t()
         omsh_t.mshID = msh_t.mshID
         omsh_t.ndims = msh_t.ndims
@@ -1346,7 +1425,7 @@ class Quads:
         return omsh_t
 
 
-    def _get_new_tris_gdf_unclean(self, msh_t):
+    def _get_new_mesh_gdf_unclean_boundaries(self, msh_t):
         def get_unique_diff(gdf1, gdf2):
             return gdf1.unary_union.difference(gdf2.unary_union)
 
@@ -1371,108 +1450,134 @@ class Quads:
         the_diff_uu = get_unique_diff(tri_gdf.iloc[to_drop_indexes], self.quads_poly_gdf)
         triangulated_diff = [tri for tri in ops.triangulate(the_diff_uu) if tri.within(the_diff_uu)]
 
-        new_tri_gdf = pd.concat([
+        new_mesh_gdf = pd.concat([
             tri_gdf.drop(index=to_drop_indexes),
             gpd.GeoDataFrame(geometry=triangulated_diff, crs=self.quads_poly_gdf.crs),
             self.quads_poly_gdf.to_crs(tri_gdf.crs),
         ], ignore_index=True)
 
-        holes_to_pad = get_unique_diff(tri_gdf, new_tri_gdf).difference(self.quads_poly_gdf.unary_union)
+        holes_to_pad = get_unique_diff(tri_gdf, new_mesh_gdf).difference(self.quads_poly_gdf.unary_union)
         triangles_to_add = get_triangles_from_holes(holes_to_pad)
-        new_tri_gdf = pd.concat([new_tri_gdf, gpd.GeoDataFrame(geometry=triangles_to_add, crs=self.quads_poly_gdf.crs)], ignore_index=True)
+        new_mesh_gdf = pd.concat([new_mesh_gdf, gpd.GeoDataFrame(geometry=triangles_to_add, crs=self.quads_poly_gdf.crs)], ignore_index=True)
 
-        holes_to_pad = get_unique_diff(tri_gdf, new_tri_gdf).difference(self.quads_poly_gdf.unary_union)
+        holes_to_pad = get_unique_diff(tri_gdf, new_mesh_gdf).difference(self.quads_poly_gdf.unary_union)
         linear_rings = [LinearRing(hole.exterior) for hole in get_multipolygon(holes_to_pad).geoms]
         new_triangles = [Polygon(geom) for lr in linear_rings for geom in manually_triangulate(lr)]
 
-        return pd.concat([
-            new_tri_gdf,
-            gpd.GeoDataFrame(geometry=new_triangles, crs=new_tri_gdf.crs)
+        new_mesh_gdf = pd.concat([
+            new_mesh_gdf,
+            gpd.GeoDataFrame(geometry=new_triangles, crs=new_mesh_gdf.crs)
         ], ignore_index=True).to_crs(msh_t.crs)
+        new_mesh_gdf['element_type'] = new_mesh_gdf['quad_group_id'].map(lambda x: 'tria' if np.isnan(x) else 'quad')
+        new_mesh_gdf.drop(columns=['quad_group_id', 'quad_row_id', 'quad_id', 'normal_vector'], inplace=True)
+        return new_mesh_gdf
 
     def _get_new_msh_t(self, msh_t):
+        new_msh_t = self._cleanup_overlapping_edges(self._get_new_mesh_gdf_unclean_boundaries(msh_t))
+        utils.split_bad_quality_quads(new_msh_t)
+        # self._fix_triangles_outside_SCHISM_skewness_tolerance(new_msh_t)
+        return new_msh_t
 
+    def _cleanup_overlapping_edges(self, mesh_gdf):
 
+        def is_conforming(row) -> bool:
+            from shapely import equals_exact
+            tria = mesh_gdf.loc[row.index_right].geometry
+            quad = row.geometry
+            tria_to_quad_intersection = tria.intersection(quad)
+            if isinstance(tria_to_quad_intersection, Point):
+                if any(Point(quad_point).equals(tria_to_quad_intersection) for quad_point in quad.exterior.coords[:-1]):
+                    cnt = 0
+                    for tria_point in tria.exterior.coords[:-1]:
+                        if Point(tria_point).buffer(np.finfo(np.float32).eps).intersects(quad):
+                            cnt += 1
+                    if cnt == 1:
+                        return True
+            elif isinstance(tria_to_quad_intersection, LineString):
+                quad_edges = [
+                    LineString([quad.exterior.coords[i], quad.exterior.coords[(i+1)%4]])
+                    for i in range(4)
+                ]
+                eps = 1.e-8
+                if any(equals_exact(tria_to_quad_intersection, quad_edge, tolerance=eps) or  equals_exact(tria_to_quad_intersection.reverse(), quad_edge, tolerance=eps) for quad_edge in quad_edges):
+                    return True
+            elif isinstance(tria_to_quad_intersection, Polygon):
+                if not tria.buffer(np.finfo(np.float32).eps).intersects(quad.buffer(np.finfo(np.float32).eps)):
+                    return True
+            return False
 
-        def cleanup_overlapping_edges(nodes, elements):
-            vert2 = np.array(nodes)
-            tria3 = np.array([element for element in elements if len(element) == 3])
-            quad4 = np.array([element for element in elements if len(element) == 4])
-            tria3_edges = np.hstack((tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])).reshape(-1, 2)
-            quad4_edges = np.hstack((quad4[:, [0, 1]], quad4[:, [1, 2]], quad4[:, [2, 3]], quad4[:, [3, 0]])).reshape(-1, 2)
-            all_edges = np.vstack([tria3_edges, quad4_edges])
-            sorted_edges = np.sort(all_edges, axis=1)
-            unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
-            boundary_edges = unique_edges[counts == 1]
-            boundary_rings = ops.linemerge(MultiLineString([LineString(x) for x in vert2[boundary_edges]]))
-            if isinstance(boundary_rings, LineString):
-                boundary_rings = MultiLineString(boundary_rings)
-
-            this_gdf = gpd.GeoDataFrame(geometry=[Polygon(ls) for ls in boundary_rings.geoms], crs=msh_t.crs)
-            this_gdf['is_valid'] = this_gdf.geometry.map(lambda geom: geom.is_valid)
-            invalid_polys = this_gdf[~this_gdf['is_valid']]
-            invalid_polys['reason'] = invalid_polys.geometry.map(lambda geom: explain_validity(geom))
-            reasons = invalid_polys.reason.values
-            import re
-            coordinate_tuples = np.array([
-                tuple(map(float, re.findall(r"[-+]?[0-9]*\.?[0-9]+", reason)))
-                for reason in reasons
-            ])
-            tria3_edges_vert2 = np.array(vert2[tria3_edges])
-            tria3_edges_vert2 = np.vstack([tria3_edges_vert2[:, :, 0], tria3_edges_vert2[:, :, 1]])
-
-            # Reshape your arrays to have shape (n, 1, 2) and (1, m, 2)
-            # tria3_edges_vert2 = tria3_edges_vert2.reshape(tria3_edges_vert2.shape[0], 1, -1)
-            # coordinate_tuples = coordinate_tuples.reshape(1, coordinate_tuples.shape[0], -1)
-
-            # Find common rows
-            # common_rows = np.any(np.all(tria3_edges_vert2 == coordinate_tuples, axis=2), axis=1)
-
-            # Get the indices of the common rows
-            # common_row_indices = np.where(common_rows)[0]
-
-            # Creating views for structured arrays
-            a = tria3_edges_vert2
-            b = coordinate_tuples
-            a_rows = a.view([('', a.dtype)] * a.shape[1])
-            b_rows = b.view([('', b.dtype)] * b.shape[1])
-
-            # Finding the common rows
-            common_rows = np.intersect1d(a_rows, b_rows)
-
-            # Finding the indices of the common rows in the original arrays
-            common_indices_in_a = np.where(np.isin(a_rows, common_rows))[0]
-            common_indices_in_b = np.where(np.isin(b_rows, common_rows))[0]
-
-            breakpoint()
-            quad4_edges_vert2 = np.array(vert2[quad4_edges])
-
-            # Reshape coordinate_tuples to allow broadcasting
-            # coordinate_tuples_expanded = coordinate_tuples[:, np.newaxis, np.newaxis, :]
-
-            # # Identify the rows of tria3_edges_vert2 where each coordinate in coordinate_tuples is found
-            # matches = np.any(np.all(tria3_edges_vert2[:, :, np.newaxis, :] == coordinate_tuples_expanded, axis=3), axis=1)
-
-            # # Find the indices of the matching rows
-            # matching_indices = np.nonzero(matches)
-
-            breakpoint()
-
-            gpd.GeoDataFrame(geometry=[ls for ls in boundary_rings.geoms], crs=msh_t.crs).plot(
-                    facecolor='none',
-                    cmap='tab20',
-                    ax=plt.gca(),
+        def get_intersection_gdf():
+            tria_elements_buffered = mesh_gdf[mesh_gdf.element_type=='tria']
+            tria_elements_buffered['geometry'] = tria_elements_buffered.geometry.map(lambda x: x.buffer(np.finfo(np.float16).eps))
+            quad_elements = mesh_gdf[mesh_gdf.element_type=='quad']
+            original_geometries = quad_elements.geometry
+            quad_elements['geometry'] = quad_elements.geometry.map(lambda x: x.buffer(np.finfo(np.float16).eps))
+            intersection_gdf = gpd.sjoin(
+                    quad_elements,
+                    tria_elements_buffered,
+                    how='inner',
+                    op='intersects'
                     )
-            plt.show(block=False)
-            breakpoint()
-            raise
-            return nodes, elements
-        nodes, elements = poly_gdf_to_elements(self._get_new_tris_gdf_unclean(msh_t))
-        nodes, elements = cleanup_overlapping_edges(nodes, elements)
+            intersection_gdf['geometry'] = original_geometries.loc[intersection_gdf.index].geometry
+            intersection_gdf = intersection_gdf[~intersection_gdf.apply(is_conforming, axis=1)]
+            return intersection_gdf
+
+
+        def dfs(node, visited, graph):
+            if node in visited:
+                return []
+            visited.add(node)
+            component = [node]
+            for neighbor in graph.get(node, []):
+                component.extend(dfs(neighbor, visited, graph))
+            return component
+
+        def find_connected_components(graph):
+            visited = set()
+            components = []
+            for node in graph.keys():
+                if node not in visited:
+                    components.append(dfs(node, visited, graph))
+            return components
+
+        def custom_group(df):
+            # Building the graph
+            graph = {}
+            for idx, row in df.iterrows():
+                graph[idx] = graph.get(idx, []) + [row['index_right']]
+                graph[row['index_right']] = graph.get(row['index_right'], []) + [idx]
+
+            # Find connected components
+            components = find_connected_components(graph)
+
+            # Group rows by their component
+            grouped_rows = []
+            for component in components:
+                group = df[df.index.isin(component) | df['index_right'].isin(component)]
+                grouped_rows.append(group)
+
+            return grouped_rows
+
+        intersection_gdf = get_intersection_gdf()
+
+        new_triangles = []
+        for group in custom_group(intersection_gdf):
+            trias_to_drop = mesh_gdf.loc[list(sorted(set(group.index_right)))]
+            intersecting_edges = get_intersecting_edges(group, mesh_gdf)
+            new_triangles.extend(manually_triangulate(get_linear_ring_from_trias_and_edges(trias_to_drop, intersecting_edges)))
+
+        indexes_to_drop = list(sorted(set(intersection_gdf.index_right)))
+        mesh_gdf.drop(index=indexes_to_drop, inplace=True)
+        mesh_gdf.reset_index(inplace=True, drop=True)
+        mesh_gdf = pd.concat([mesh_gdf, gpd.GeoDataFrame(geometry=[Polygon(x) for x in new_triangles], crs=mesh_gdf.crs)])
+        nodes, elements = poly_gdf_to_elements(mesh_gdf)
+        return self._jigsaw_msh_t_from_nodes_elements(nodes, elements, crs=mesh_gdf.crs)
+
+    @staticmethod
+    def _jigsaw_msh_t_from_nodes_elements(nodes, elements, crs=None) -> jigsaw_msh_t:
         vert2 = np.array([(coord, 0) for coord in nodes], dtype=jigsaw_msh_t.VERT2_t)
         tria3 = np.array([(element, 0) for element in elements if len(element) == 3], dtype=jigsaw_msh_t.TRIA3_t)
         quad4 = np.array([(element, 0) for element in elements if len(element) == 4], dtype=jigsaw_msh_t.QUAD4_t)
-        crs = msh_t.crs
         msh_t = jigsaw_msh_t()
         msh_t.mshID = 'euclidean-mesh'
         msh_t.ndims = 2
@@ -1487,10 +1592,6 @@ class Quads:
         msh_t.vert2 = new_msh_t.vert2
         msh_t.tria3 = new_msh_t.tria3
         msh_t.quad4 = new_msh_t.quad4
-        utils.split_bad_quality_quads(msh_t)
-        # utils.remove_flat_triangles(msh_t)
-        # utils.cleanup_pinched_nodes_iter(msh_t)
-        # utils.cleanup_isolates(msh_t)
 
     def _fix_triangles_outside_SCHISM_skewness_tolerance(self, msh_t):
         # SCHISM can tolerate sknewness<=60 (defined as (largest side)/(equivalent radius), where  eq. radius is sqrt(area/pi).
@@ -2580,9 +2681,10 @@ def test_quadgen_for_Harlem_River():
         new_msh_t.value = value.reshape((value.size, 1)).astype(jigsaw_msh_t.REALS_t)
     from geomesh import Mesh
     the_mesh = Mesh(new_msh_t)
-    the_mesh.write('test_output_no_bnd.grd', overwrite=True)
-    the_mesh.make_plot(ax=plt.gca(), elements=True)
-    plt.show(block=True)
+    # print("writting output file")
+    # the_mesh.write('test_output_no_bnd.grd', overwrite=True)
+    # the_mesh.make_plot(ax=plt.gca(), elements=True)
+    # plt.show(block=True)
     # pickle.dump(the_mesh, open("the_quad_mesh.pkl", "wb"))
     
     # raise NotImplementedError("Ready for auto_bndgen")
@@ -2593,19 +2695,23 @@ def test_quadgen_for_Harlem_River():
     # plt.show(block=True)
     # raise
     the_mesh.boundaries.auto_generate(
-            min_open_bound_length=10000.
+            # min_open_bound_length=10000.
             )
+    the_mesh.wireframe(ax=plt.gca())
     the_mesh.boundaries.open.plot(ax=plt.gca(), color='b')
-    the_mesh.boundaries.land.plot(ax=plt.gca(), color='g')
-    the_mesh.boundaries.interior.plot(ax=plt.gca(), color='r')
-    the_mesh.triplot(ax=plt.gca())
-    the_mesh.quadplot(ax=plt.gca())
-    plt.show(block=False)
-    breakpoint()
-    raise
-    the_mesh.write('test_with_schism/test_output.grd', overwrite=True)
-    the_mesh.make_plot(ax=plt.gca(), elements=True)
+    # Add text labels to the centroid of each LineString
+    for idx, row in the_mesh.boundaries.open.iterrows():
+        centroid = row['geometry'].centroid
+        plt.gca().text(centroid.x, centroid.y, f"{idx+1=}", color='red')
+    # the_mesh.boundaries.land.plot(ax=plt.gca(), color='g')
+    # the_mesh.boundaries.interior.plot(ax=plt.gca(), color='r')
+    # the_mesh.make_plot(ax=plt.gca(), elements=True)
+    the_mesh.wireframe(ax=plt.gca())
     logger.debug('begin making mesh triplot')
     plt.title(f'node count: {len(new_msh_t.vert2["coord"])}')
     plt.gca().axis('scaled')
-    plt.show(block=True)
+    plt.show(block=False)
+    the_mesh.write('test_with_schism/test_output.grd', overwrite=True)
+    print('done writting test file')
+    breakpoint()
+    raise

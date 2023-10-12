@@ -1,6 +1,7 @@
 from collections import defaultdict
 from itertools import permutations
 from time import time
+import typing
 from typing import Dict, Union
 import logging
 
@@ -111,25 +112,40 @@ def _check_if_is_interior_worker(polygon, _msh_t):
         return True
     return False
 
-def filter_polygons(polygons):
-    """
-    This function will fail if we have invalid polygons
-    """
-    polygons = [_ for _ in polygons]
-    areas = [p.area for p in polygons]
-    outer_polygon = polygons.pop(areas.index(max(areas)))
-    if len(polygons) == 0:
-        return outer_polygon, []
-    if outer_polygon.is_empty:
-        return outer_polygon, []
-    if len(outer_polygon.interiors) == 0:
-        return outer_polygon, []
-    from geomesh.geom.base import multipolygon_to_jigsaw_msh_t  # TODO: Circular import
-    _msh_t = multipolygon_to_jigsaw_msh_t(MultiPolygon([Polygon(outer_polygon.exterior)]))
-    test_points = np.vstack([np.array(polygon.exterior.coords)[0, :] for polygon in polygons])
-    in_poly, on_edge = inpoly2(test_points, _msh_t.vert2['coord'], _msh_t.edge2['index'])
-    remaining_polygons = np.array(polygons)[np.where(~in_poly)].tolist()
-    return outer_polygon, remaining_polygons
+# def filter_polygons(polygons):
+#     from geomesh.geom.base import multipolygon_to_jigsaw_msh_t
+#     polygons = [_ for _ in polygons]
+#     areas = [p.area for p in polygons]
+#     outer_polygon = polygons.pop(areas.index(max(areas)))
+#     if len(polygons) == 0:
+#         return outer_polygon, []
+#     if outer_polygon.is_empty:
+#         return outer_polygon, []
+#     if len(outer_polygon.interiors) == 0:
+#         return outer_polygon, []
+#     _msh_t = multipolygon_to_jigsaw_msh_t(MultiPolygon([Polygon(outer_polygon.exterior)]))
+#     test_points = np.vstack([np.array(polygon.exterior.coords)[0, :] for polygon in polygons])
+#     in_poly, on_edge = inpoly2(test_points, _msh_t.vert2['coord'], _msh_t.edge2['index'])
+#     remaining_polygons = np.array(polygons)[np.where(~in_poly)].tolist()
+#     return outer_polygon, remaining_polygons
+def filter_polygons(polygons, crs) -> typing.List[Polygon]:
+    # Convert list of polygons to a GeoSeries
+    gdf = gpd.GeoDataFrame(geometry=polygons, crs=crs)
+    gdf['area'] = gdf.to_crs("epsg:6933").area
+    # Sort polygons by area in descending order
+    gdf = gdf.sort_values('area', ascending=False)
+
+    # The first polygon in sorted list is the outermost polygon
+    outer_polygon = gdf.iloc[0].geometry
+    outer_polygons = [outer_polygon]
+    gdf = gdf.iloc[1:]
+
+    # Loop through remaining polygons to check if they're inside the outermost polygon
+    for polygon in gdf.geometry:
+        if not Polygon(outer_polygon.exterior).contains(polygon):
+            outer_polygons.append(polygon)
+
+    return outer_polygons
 
 def cleanup_pinched_nodes(mesh, e0_unique, e0_count, e1_unique, e1_count):
     mesh.tria3 = mesh.tria3.take(
@@ -153,43 +169,20 @@ def get_geom_msh_t_from_msh_t(mesh):
     return multipolygon_to_jigsaw_msh_t(get_geom_msh_t_from_msh_t_as_mp(mesh))
 
 
-def get_geom_msh_t_from_msh_t_as_mp(mesh):
-    boundary_edges = list()
-    logger.info('build mesh_to_tri')
-    tri = mesh_to_tri(mesh)
-    logger.info('build element neighbors array')
-    idxs = np.vstack(list(np.where(tri.neighbors == -1))).T
-    logger.info('build boundary edges array')
-    for i, j in idxs:
-        boundary_edges.append((
-            tri.triangles[i, j],
-            tri.triangles[i, (j+1) % 3]
-            ))
-    logger.info('call linemerge')
-    start = time()
-    boundary_rings = linemerge(MultiLineString([LineString(x) for x in mesh.vert2['coord'][boundary_edges]]))
-    logger.info(f'linemerge took {time()-start}')
-    logger.info('polygonizing ... ')
-    start = time()
+def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
+    tria3 = msh_t.tria3['index']
+    quad4 = msh_t.quad4['index']
+    tria3_edges = np.hstack((tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])).reshape(-1, 2)
+    quad4_edges = np.hstack((quad4[:, [0, 1]], quad4[:, [1, 2]], quad4[:, [2, 3]], quad4[:, [3, 0]])).reshape(-1, 2)
+    all_edges = np.vstack([tria3_edges, quad4_edges])
+    sorted_edges = np.sort(all_edges, axis=1)
+    unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
+    boundary_edges = unique_edges[counts == 1]
+    boundary_rings = linemerge(MultiLineString([LineString(x) for x in msh_t.vert2['coord'][boundary_edges]]))
+    if isinstance(boundary_rings, LineString):
+        boundary_rings = MultiLineString(boundary_rings)
     polygons = list(polygonize(boundary_rings))
-    logger.info(f'polygonizing took {time()-start}')
-
-    logger.info('start filter polygon 1')
-    outer_polygons = []
-    start = time()
-    outer_polygon, remaining = filter_polygons(polygons)
-    logger.info(f'filter poly 1 took {time()-start}')
-
-    outer_polygons.append(outer_polygon)
-    cnt = 2
-    while len(remaining) > 0:
-        logger.info(f'start filter polygon {cnt}')
-        start = time()
-        outer_polygon, remaining = filter_polygons(remaining)
-        logger.info(f'filter poly {cnt} took {time()-start}')
-        cnt += 1
-        outer_polygons.append(outer_polygon)
-    return MultiPolygon(outer_polygons)
+    return MultiPolygon(filter_polygons(polygons, msh_t.crs))
 
 
 
@@ -605,7 +598,16 @@ def split_bad_quality_quads(
     msh_t.quad4 = msh_t.quad4[~to_split]    # New triangles container
 
 
-def finalize_mesh(mesh, sieve_area=True):
+def wireframe(msh_t, ax=None, triplot_kwargs=None, quadplot_kwargs=None):
+    triplot_kwargs = triplot_kwargs or {}
+    triplot_kwargs.setdefault('ax', ax or plt.gca())
+    triplot(msh_t, **triplot_kwargs)
+    quadplot_kwargs = quadplot_kwargs or {}
+    quadplot_kwargs.setdefault('ax', ax or plt.gca())
+    quadplot(msh_t, **quadplot_kwargs)
+    return ax
+
+def finalize_mesh(mesh, sieve=True):
     # remove flat triangles
 
     cleanup_pinched_nodes_iter(mesh)
@@ -615,15 +617,15 @@ def finalize_mesh(mesh, sieve_area=True):
 
     from geomesh.geom.base import multipolygon_to_jigsaw_msh_t  # TODO: Circular import
 
-    if sieve_area is True:
+    if sieve is True:
         areas = [poly.area for poly in mp.geoms]
         polygon = mp.geoms[areas.index(max(areas))]
         mp = MultiPolygon([polygon])
-    elif sieve_area is None:
+    elif sieve is None or sieve is False:
         pass
     else:
         # TODO:
-        raise NotImplementedError(f'Unhandled sieve_area: expected None or bool but got {sieve_area}')
+        raise NotImplementedError(f'Unhandled sieve: expected None or bool but got {sieve}')
 
     _msh_t = multipolygon_to_jigsaw_msh_t(mp)
 
@@ -1114,7 +1116,7 @@ def triplot(
     show=False,
     figsize=None,
     color='k',
-    linewidth=0.7,
+    linewidth=0.3,
     **kwargs
 ):
     ax = ax or plt.gca()
@@ -1133,7 +1135,7 @@ def quadplot(
     ax=None,
     facecolor="none",
     edgecolor="k",
-    linewidth=0.07,
+    linewidth=0.3,
     **kwargs,
 ):
     ax = ax or plt.gca()

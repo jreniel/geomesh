@@ -40,41 +40,8 @@ class Rings:
     def __init__(self, mesh: "EuclideanMesh"):
         self.mesh = mesh
 
-    @lru_cache
     def __call__(self):
-        # Step 1: Construct a list of all edges
-        tria3 = self.mesh.msh_t.tria3['index']
-        quad4 = self.mesh.msh_t.quad4['index']
-        tria3_edges = np.hstack((tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])).reshape(-1, 2)
-        quad4_edges = np.hstack((quad4[:, [0, 1]], quad4[:, [1, 2]], quad4[:, [2, 3]], quad4[:, [3, 0]])).reshape(-1, 2)
-        all_edges = np.vstack([tria3_edges, quad4_edges])
-        sorted_edges = np.sort(all_edges, axis=1)
-        unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
-        boundary_edges = unique_edges[counts == 1]
-        boundary_rings = linemerge(MultiLineString([LineString(x) for x in self.mesh.msh_t.vert2['coord'][boundary_edges]]))
-        if isinstance(boundary_rings, LineString):
-            boundary_rings = MultiLineString(boundary_rings)
-        gpd.GeoDataFrame(geometry=[ls for ls in boundary_rings.geoms], crs=self.mesh.crs).plot(
-                facecolor='none',
-                cmap='tab20',
-                ax=plt.gca(),
-                )
-        plt.show(block=True)
-        breakpoint()
-        polygons = list(polygonize(boundary_rings))
-
-        gpd.GeoDataFrame(geometry=polygons, crs=self.mesh.crs).plot(facecolor='none', ax=plt.gca())
-        plt.show(block=True)
-        breakpoint()
-        raise
-
-        outer_polygons = []
-        outer_polygon, remaining = utils.filter_polygons(polygons)
-        outer_polygons.append(outer_polygon)
-        while len(remaining) > 0:
-            outer_polygon, remaining = utils.filter_polygons(remaining)
-            outer_polygons.append(outer_polygon)
-        mp = MultiPolygon(outer_polygons)
+        mp = utils.get_geom_msh_t_from_msh_t_as_mp(self.mesh.msh_t)
         data = []
         for bnd_id, polygon in enumerate(mp.geoms):
             data.append({"geometry": polygon.exterior, "bnd_id": bnd_id, "type": "exterior"})
@@ -90,9 +57,8 @@ class Rings:
     def interior(self):
         return self().loc[self()["type"] == "interior"]
 
-    @lru_cache(maxsize=1)
     def sorted(self):
-        mp = utils.geom_to_multipolygon(self.mesh.msh_t)
+        mp = utils.get_geom_msh_t_from_msh_t_as_mp(self.mesh.msh_t)
         sorted_rings = {}
         tree = KDTree(self.mesh.coord)
         # on_edge = np.where(on_edge)
@@ -134,7 +100,6 @@ class Edges:
     def __init__(self, mesh: "EuclideanMesh"):
         self.mesh = mesh
 
-    @lru_cache(maxsize=1)
     def __call__(self) -> gpd.GeoDataFrame:
         data = []
         for ring in self.mesh.hull.rings().itertuples():
@@ -162,7 +127,6 @@ class Hull:
         self.rings = Rings(mesh)
         self.edges = Edges(mesh)
 
-    @lru_cache(maxsize=1)
     def __call__(self):
         data = []
         for bnd_id in np.unique(self.rings()["bnd_id"].tolist()):
@@ -228,7 +192,6 @@ class Nodes:
     def __init__(self, mesh: "EuclideanMesh"):
         self.mesh = mesh
 
-    @lru_cache(maxsize=1)
     def __call__(self):
         # return {
         #     i + 1: (coord, self.mesh.value[i][0] if len(self.mesh.value[i]) <= 1 else self.mesh.value[i])
@@ -579,6 +542,9 @@ class EuclideanMesh2D(EuclideanMesh):
 
     def quadplot(self, **kwargs):
         return utils.quadplot(self.msh_t, **kwargs)
+
+    def wireframe(self, **kwargs):
+        return utils.wireframe(self.msh_t, **kwargs)
 
     def quadface(self, **kwargs):
         return utils.quadface(self.msh_t, **kwargs)
