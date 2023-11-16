@@ -37,7 +37,7 @@ class JigsawDriver:
             initial_mesh: Union[BaseMesh, jigsaw_msh_t] = None,
             verbosity: int = 0,
             dst_crs=None,
-            sieve_area=None,
+            sieve=None,
             finalize: bool = True,
             geom_feat: bool = None,
     ):
@@ -53,7 +53,7 @@ class JigsawDriver:
         self.initial_mesh = initial_mesh
         self.verbosity = verbosity
         self.dst_crs = dst_crs
-        self.sieve_area = sieve_area
+        self.sieve = sieve
         self.finalize = bool(finalize)
         if geom_feat is not None:
             self.opts.geom_feat = bool(geom_feat)
@@ -168,13 +168,13 @@ class JigsawDriver:
         logger.info('Launching libsaw.jigsaw...')
         libsaw.jigsaw(self.opts, geom, output_mesh, hfun=hfun, init=init)
         logger.info('Finalizing mesh...')
-        if self.finalize:
-            utils.finalize_mesh(output_mesh, sieve_area=self.sieve_area)
         if local_crs is not None:
             output_mesh.crs = local_crs
             utils.reproject(output_mesh, self.dst_crs)
         else:
             output_mesh.crs = self.dst_crs
+        if self.finalize:
+            utils.finalize_mesh(output_mesh, sieve=self.sieve)
         return output_mesh
 
     def run(self):
@@ -270,3 +270,145 @@ class JigsawDriver:
             dst_crs = CRS.from_epsg(4326)
         self._dst_crs = dst_crs
 
+
+
+def test_meshgen_for_Harlem_River():
+    import pickle
+    from pathlib import Path
+    from geomesh import Geom, Hfun, Raster, JigsawDriver
+    import matplotlib.pyplot as plt
+    from appdirs import user_data_dir
+
+    rootdir = user_data_dir('geomesh')
+    raster = Raster(
+            f'{rootdir}/raster_cache/chs.coast.noaa.gov/htdata/'
+            'raster2/elevation/NCEI_ninth_Topobathy_2014_8483/'
+            'northeast_sandy/ncei19_n41x00_w074x00_2015v1.tif',
+            )
+    # quads = Quads.from_raster(
+    #                         raster,
+    #                         # min_quad_length=10.,
+    #                         max_quad_length=500.,
+    #                         resample_distance=100.,
+    #                         max_quad_width=500.,
+    #                         threshold_size=1500.,
+    #                         # threshold_size=500.,
+    #                         # min_quad_width=10.,
+    #                         )
+    # quads = Quads.from_raster(
+    #                         raster,
+    #                         threshold_size=1500.,
+    #                         # min_quad_length=10.,
+    #                         max_quad_length=500.,
+    #                         resample_distance=100.,
+    #                         zmin=0.,
+    #                         zmax=10.,
+    #                         max_quad_width=500.,
+    #                         # min_quad_width=10.,
+    #                         previous=quads,
+    #                         )
+    raster.resampling_factor = 0.2
+    geom = Geom(
+            raster,
+            zmax=10.,
+            )
+    hfun = Hfun(
+            raster,
+            nprocs=cpu_count(),
+            verbosity=1.,
+            )
+    hfun.add_contour(
+            0.,
+            target_size=100.,
+            expansion_rate=0.007
+            )
+    hfun.add_contour(
+            10.,
+            target_size=100.,
+            expansion_rate=0.007
+            )
+    hfun.add_constant_value(
+            value=500.,
+            # lower_bound=0.
+            )
+    driver = JigsawDriver(
+            geom=geom,
+            hfun=hfun,
+            verbosity=1,
+            # sieve_area=True,
+            # finalize=False,
+            )
+    # driver.opts.geom_feat = True
+    old_msh_t = driver.msh_t()
+    # # pickle.dump(old_msh_t, open("the_old_msh_t.pkl", "wb"))
+    # old_msh_t = pickle.load(open("the_old_msh_t.pkl", "rb"))
+    # # raise NotImplementedError("ready")
+    # # new_msh_t = old_msh_t
+    # new_msh_t = quads(old_msh_t)
+
+    # # utils.split_quad4_to_tria3(new_msh_t)
+
+    # from geomesh.cli.mpi.hgrid_build import interpolate_raster_to_mesh
+    # raster.resampling_factor = None
+    # new_msh_t.value = np.full((new_msh_t.vert2['coord'].shape[0], 1), np.nan)
+    # from time import time
+    # logger.debug('interpolating raster to mesh...')
+    # start = time()
+    # idxs, values = interpolate_raster_to_mesh(
+    #         new_msh_t,
+    #         raster,
+    #         )
+    # new_msh_t.value[idxs] = values.reshape((values.size, 1)).astype(jigsaw_msh_t.REALS_t)
+    # logger.debug(f'Done interpolating raster to mesh, took: {time()-start}...')
+    # if np.all(np.isnan(new_msh_t.value)):
+    #     raise ValueError('All values are NaN!')
+    # from scipy.interpolate import griddata
+    # if np.any(np.isnan(new_msh_t.value)):
+    #     value = new_msh_t.value.flatten()
+    #     non_nan_idxs = np.where(~np.isnan(value))[0]
+    #     nan_idxs = np.where(np.isnan(value))[0]
+    #     value[nan_idxs] = griddata(
+    #             new_msh_t.vert2['coord'][non_nan_idxs, :],
+    #             value[non_nan_idxs],
+    #             new_msh_t.vert2['coord'][nan_idxs, :],
+    #             method='nearest'
+    #             )
+    #     new_msh_t.value = value.reshape((value.size, 1)).astype(jigsaw_msh_t.REALS_t)
+    # from geomesh import Mesh
+    # the_mesh = Mesh(new_msh_t)
+    # # print("writting output file")
+    # # the_mesh.write('test_output_no_bnd.grd', overwrite=True)
+    # # the_mesh.make_plot(ax=plt.gca(), elements=True)
+    # # plt.show(block=True)
+    # # pickle.dump(the_mesh, open("the_quad_mesh.pkl", "wb"))
+    
+    # # raise NotImplementedError("Ready for auto_bndgen")
+    # # exit()
+    # # import pickle
+    # # the_mesh = pickle.load(open("the_quad_mesh.pkl", "rb"))
+    # # the_mesh.make_plot(ax=plt.gca(), elements=True)
+    # # plt.show(block=True)
+    # # raise
+    # # the_mesh.wireframe(ax=plt.gca())
+    # # plt.show(block=False)
+    # # breakpoint()
+    # # raise
+    # the_mesh.boundaries.auto_generate(
+    #         # min_open_bound_length=10000.
+    #         )
+    # the_mesh.boundaries.open.plot(ax=plt.gca(), color='b')
+    # # Add text labels to the centroid of each LineString
+    # for idx, row in the_mesh.boundaries.open.iterrows():
+    #     centroid = row['geometry'].centroid
+    #     plt.gca().text(centroid.x, centroid.y, f"{idx+1=}", color='red')
+    # the_mesh.boundaries.land.plot(ax=plt.gca(), color='g')
+    # the_mesh.boundaries.interior.plot(ax=plt.gca(), color='r')
+    # the_mesh.make_plot(ax=plt.gca(), elements=True)
+    # # the_mesh.wireframe(ax=plt.gca())
+    # logger.debug('begin making mesh triplot')
+    # plt.title(f'node count: {len(new_msh_t.vert2["coord"])}')
+    # plt.gca().axis('scaled')
+    # plt.show(block=False)
+    # the_mesh.write('test_with_schism/test_output.grd', overwrite=True)
+    # print('done writting test file')
+    # breakpoint()

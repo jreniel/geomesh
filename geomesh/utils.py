@@ -1,9 +1,10 @@
 from collections import defaultdict
 from itertools import permutations
 from time import time
-import typing
 from typing import Dict, Union
+import inspect
 import logging
+import typing
 
 
 from inpoly import inpoly2
@@ -129,23 +130,22 @@ def _check_if_is_interior_worker(polygon, _msh_t):
 #     remaining_polygons = np.array(polygons)[np.where(~in_poly)].tolist()
 #     return outer_polygon, remaining_polygons
 def filter_polygons(polygons, crs) -> typing.List[Polygon]:
-    # Convert list of polygons to a GeoSeries
-    gdf = gpd.GeoDataFrame(geometry=polygons, crs=crs)
-    gdf['area'] = gdf.to_crs("epsg:6933").area
-    # Sort polygons by area in descending order
-    gdf = gdf.sort_values('area', ascending=False)
+    exteriors_gdf = gpd.GeoDataFrame(geometry=[Polygon(poly.exterior) for poly in polygons], crs=crs)
+    joined = gpd.sjoin(exteriors_gdf, exteriors_gdf, how='left', predicate='within')
+    joined = joined[joined.index != joined.index_right]
+    filtered_polygons = exteriors_gdf.loc[~exteriors_gdf.index.isin(joined.index.unique())]
+    return [polygons[index] for index in filtered_polygons.index.unique()]
 
-    # The first polygon in sorted list is the outermost polygon
-    outer_polygon = gdf.iloc[0].geometry
-    outer_polygons = [outer_polygon]
-    gdf = gdf.iloc[1:]
-
-    # Loop through remaining polygons to check if they're inside the outermost polygon
-    for polygon in gdf.geometry:
-        if not Polygon(outer_polygon.exterior).contains(polygon):
-            outer_polygons.append(polygon)
-
-    return outer_polygons
+    # gdf = gpd.GeoDataFrame(geometry=polygons, crs=crs)
+    # gdf['area'] = gdf.to_crs("epsg:6933").area
+    # gdf = gdf.sort_values('area', ascending=False)
+    # outer_polygon = gdf.iloc[0].geometry
+    # outer_polygons = [outer_polygon]
+    # gdf = gdf.iloc[1:]
+    # for polygon in gdf.geometry:
+    #     if not Polygon(outer_polygon.exterior).contains(polygon):
+    #         outer_polygons.append(polygon)
+    # return outer_polygons
 
 def cleanup_pinched_nodes(mesh, e0_unique, e0_count, e1_unique, e1_count):
     mesh.tria3 = mesh.tria3.take(
@@ -170,6 +170,8 @@ def get_geom_msh_t_from_msh_t(mesh):
 
 
 def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
+    from shapely.validation import explain_validity
+
     tria3 = msh_t.tria3['index']
     quad4 = msh_t.quad4['index']
     tria3_edges = np.hstack((tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])).reshape(-1, 2)
@@ -178,11 +180,64 @@ def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
     sorted_edges = np.sort(all_edges, axis=1)
     unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
     boundary_edges = unique_edges[counts == 1]
-    boundary_rings = linemerge(MultiLineString([LineString(x) for x in msh_t.vert2['coord'][boundary_edges]]))
+    boundary_rings = linemerge([LineString(x) for x in msh_t.vert2['coord'][boundary_edges]])
     if isinstance(boundary_rings, LineString):
         boundary_rings = MultiLineString(boundary_rings)
+    # verify
+    # gpd.GeoDataFrame(geometry=[LineString(x) for x in boundary_rings.geoms]).plot(ax=plt.gca(), color=np.random.rand(3,), linewidth=1.3)
+    # plt.show(block=False)
+    # breakpoint()
+    # boundary_rings = [LinearRing(x) for x in boundary_rings.geoms]
+    # verify:
+    invalids = []
+    valids = []
+    for i, ring in enumerate(boundary_rings.geoms):
+        try:
+            ring = LinearRing(ring)
+        except Exception as err:
+            invalids.append((i, ring, str(err)))
+        if not np.all([ring.is_ring, ring.is_valid]):
+            invalids.append((i, ring, explain_validity(ring)))
+    if len(invalids) > 0:
+        # # verify:
+        wireframe(msh_t, ax=plt.gca(), linewidth=0.1)
+        icoll = []
+        for i, ring, validity_text in invalids:
+            print(validity_text)
+            icoll.append(str(i))
+            gpd.GeoDataFrame(geometry=[ring]).plot(ax=plt.gca(), color=np.random.rand(3,), linewidth=1.3)
+        plt.title(f"Cannot build Not rings at {', '.join(icoll)}")
+        plt.show(block=False)
+        breakpoint()
+        raise
+    #     try:
+    #         print(ring)
+    #         print(LinearRing(ring))
+    #         print(Polygon(ring))
+    #     except:
+    #         gpd.GeoDataFrame(geometry=[ring]).plot(ax=plt.gca(), color='r', linewidth=1.3)
+    #         plt.show(block=False)
+    #         breakpoint()
+    #         raise
+    # fig, ax = plt.subplots()
     polygons = list(polygonize(boundary_rings))
-    return MultiPolygon(filter_polygons(polygons, msh_t.crs))
+    mp =  MultiPolygon(filter_polygons(polygons, msh_t.crs))
+    # verify
+    # fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4))
+    # gpd.GeoDataFrame(geometry=boundary_rings).explode().plot(ax=axes[0], cmap='tab20')
+    # gpd.GeoDataFrame(geometry=polygons).plot(ax=axes[1], cmap='jet')
+    # plt.show(block=False)
+    # breakpoint()
+    # raise
+    # TODO: Use the new shapely functions and avoid the manual filtering
+    # import shapely
+    # res = shapely.multipolygons(shapely.get_parts(polygons))
+    # # breakpoint()
+    # # verify
+    # gpd.GeoDataFrame(geometry=[mp], crs=msh_t.crs).plot(ax=plt.gca())
+    # plt.show(block=False)
+    # breakpoint()
+    return mp
 
 
 
@@ -598,14 +653,26 @@ def split_bad_quality_quads(
     msh_t.quad4 = msh_t.quad4[~to_split]    # New triangles container
 
 
-def wireframe(msh_t, ax=None, triplot_kwargs=None, quadplot_kwargs=None):
+def wireframe(msh_t, ax=None, triplot_kwargs=None, quadplot_kwargs=None, **kwargs):
     triplot_kwargs = triplot_kwargs or {}
-    triplot_kwargs.setdefault('ax', ax or plt.gca())
-    triplot(msh_t, **triplot_kwargs)
     quadplot_kwargs = quadplot_kwargs or {}
-    quadplot_kwargs.setdefault('ax', ax or plt.gca())
-    quadplot(msh_t, **quadplot_kwargs)
+
+    # Filter kwargs for triplot
+    triplot_params = inspect.signature(triplot).parameters
+    triplot_args = {k: v for k, v in kwargs.items() if k in triplot_params}
+    combined_triplot_kwargs = {**triplot_args, **triplot_kwargs}  # triplot_kwargs takes precedence
+    combined_triplot_kwargs.setdefault('ax', ax or plt.gca())
+    triplot(msh_t, **combined_triplot_kwargs)
+
+    # Filter kwargs for quadplot
+    quadplot_params = inspect.signature(quadplot).parameters
+    quadplot_args = {k: v for k, v in kwargs.items() if k in quadplot_params}
+    combined_quadplot_kwargs = {**quadplot_args, **quadplot_kwargs}  # quadplot_kwargs takes precedence
+    combined_quadplot_kwargs.setdefault('ax', ax or plt.gca())
+    quadplot(msh_t, **combined_quadplot_kwargs)
+
     return ax
+
 
 def finalize_mesh(mesh, sieve=True):
     # remove flat triangles

@@ -2,6 +2,7 @@ import os
 from typing import Union
 
 from jigsawpy import jigsaw_msh_t
+import matplotlib.pyplot as plt
 
 from geomesh.figures import figure
 from geomesh import utils
@@ -56,7 +57,7 @@ class MeshHfun(BaseHfun):
 
     def tricontourf(
         self,
-        axes=None,
+        ax=None,
         show=False,
         figsize=None,
         extend="both",
@@ -66,8 +67,9 @@ class MeshHfun(BaseHfun):
         linewidth=0.07,
         **kwargs,
     ):
+        ax = ax or plt.gca()
         msh_t = self.msh_t()
-        axes.tricontourf(
+        ax.tricontourf(
             msh_t.vert2["coord"][:, 0],
             msh_t.vert2["coord"][:, 1],
             msh_t.tria3["index"],
@@ -75,14 +77,14 @@ class MeshHfun(BaseHfun):
             **kwargs,
         )
         if elements is True:
-            axes.triplot(
+            ax.triplot(
                 msh_t.vert2["coord"][:, 0],
                 msh_t.vert2["coord"][:, 1],
                 msh_t.tria3["index"],
                 color=color,
                 linewidth=linewidth,
             )
-        return axes
+        return ax
 
     @figure
     def triplot(

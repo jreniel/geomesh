@@ -118,7 +118,10 @@ class Boundaries:
         interior_boundaries = []
         # cnt = 0
         tree = KDTree(self.hgrid.coord)
-
+        import matplotlib.pyplot as plt
+        self.hgrid.hull.rings().plot(ax=plt.gca())
+        plt.show(block=False)
+        breakpoint()
         for rings in self.hgrid.hull.rings.sorted().values():
             ring = rings['exterior']
             edge_tag = np.full(ring.shape, 0)
