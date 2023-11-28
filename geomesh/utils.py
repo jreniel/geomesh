@@ -164,10 +164,17 @@ def geom_to_multipolygon(mesh):
     return get_geom_msh_t_from_msh_t_as_mp(mesh)
 
 
+def get_geom_msh_t_from_msh_t_as_msh_t(msh_t) -> jigsaw_msh_t:
+    mp = get_geom_msh_t_from_msh_t_as_mp(msh_t)
+    return multipolygon_to_jigsaw_msh_t(mp)
+
 def get_geom_msh_t_from_msh_t(mesh):
     from geomesh.geom.base import multipolygon_to_jigsaw_msh_t
     return multipolygon_to_jigsaw_msh_t(get_geom_msh_t_from_msh_t_as_mp(mesh))
 
+def multipolygon_to_jigsaw_msh_t(mp):
+    from geomesh.geom.base import multipolygon_to_jigsaw_msh_t
+    return multipolygon_to_jigsaw_msh_t(mp)
 
 def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
     from shapely.validation import explain_validity
