@@ -1131,37 +1131,38 @@ def get_quad_group_data(
 
 from collections import defaultdict
 
-# def poly_gdf_to_elements(poly_gdf):
-#     original_crs = poly_gdf.crs
-#     poly_gdf = poly_gdf.copy().to_crs("epsg:6933")
-#     print("make sure orientation is ccw")
-#     poly_gdf["area"] = poly_gdf.geometry.area
-#     neg_area_index = poly_gdf[poly_gdf.area < 0].index
-#     poly_gdf.loc[neg_area_index, 'geometry'] = poly_gdf.loc[neg_area_index].geometry.map(lambda x: polygon.orient(x, sign=1.))
-#     poly_gdf = poly_gdf.to_crs(original_crs)
-#     print("begin creating node mappings")
-#     node_mappings = defaultdict(lambda: len(node_mappings))
-#     connectivity_table = []
-#     for row in poly_gdf.itertuples():
-#         element_coords = row.geometry.exterior.coords[:-1]
-#         element_indices = [node_mappings[p] for p in element_coords]
-#         connectivity_table.append(element_indices)
-#     return list(node_mappings.keys()), connectivity_table
-
 def poly_gdf_to_elements(poly_gdf):
-    node_mappings = {}
+    # original_crs = poly_gdf.crs
+    poly_gdf = poly_gdf.copy()
+    # print("make sure orientation is ccw")
+    # poly_gdf["area"] = poly_gdf.geometry.area
+    # neg_area_index = poly_gdf[poly_gdf.area < 0].index
+    # poly_gdf.loc[neg_area_index, 'geometry'] = poly_gdf.loc[neg_area_index].geometry.map(lambda x: polygon.orient(x, sign=1.))
+    # poly_gdf = poly_gdf.to_crs(original_crs)
+    print("begin creating node mappings")
+    poly_gdf.geometry = poly_gdf.geometry.map(lambda x: polygon.orient(x, sign=1.))
+    node_mappings = defaultdict(lambda: len(node_mappings))
     connectivity_table = []
     for row in poly_gdf.itertuples():
-        # element: LinearRing = row.geometry.exterior
-        element = polygon.orient(row.geometry, sign=1.).exterior
-        element_indices = []
-        for i in range(len(element.coords) - 1):
-            p = element.coords[i]
-            if p not in node_mappings:
-                node_mappings[p] = len(node_mappings)
-            element_indices.append(node_mappings[p])
+        element_coords = row.geometry.exterior.coords[:-1]
+        element_indices = [node_mappings[p] for p in element_coords]
         connectivity_table.append(element_indices)
     return list(node_mappings.keys()), connectivity_table
+
+# def poly_gdf_to_elements(poly_gdf):
+#     node_mappings = {}
+#     connectivity_table = []
+#     for row in poly_gdf.itertuples():
+#         # element: LinearRing = row.geometry.exterior
+#         element = polygon.orient(row.geometry, sign=1.).exterior
+#         element_indices = []
+#         for i in range(len(element.coords) - 1):
+#             p = element.coords[i]
+#             if p not in node_mappings:
+#                 node_mappings[p] = len(node_mappings)
+#             element_indices.append(node_mappings[p])
+#         connectivity_table.append(element_indices)
+#     return list(node_mappings.keys()), connectivity_table
 
 
 def quads_gdf_to_elements(quads_gdf):
@@ -3724,13 +3725,28 @@ class Quads:
     
     def _get_new_msh_t_from_cdt(self, msh_t):
         def get_target_mesh_gdf():
-            print("begin building original_mesh_gdf")
-            with Pool(cpu_count()) as pool:
-                original_mesh_gdf = gpd.GeoDataFrame(
-                    geometry=list(pool.map(Polygon, msh_t.vert2['coord'][msh_t.tria3['index'], :].tolist())),
-                    crs=msh_t.crs
-                )
-            print("use join to remove elements that intersect")
+            print("begin building original_mesh_gdf", flush=True)
+            # from concurrent.futures import ProcessPoolExecutor
+            # nprocs = cpu_count()
+            # chunksize = len(msh_t.vert2) // (nprocs-1)
+            # print(nprocs)
+            # with Pool(nprocs) as pool:
+            #     original_mesh_gdf = gpd.GeoDataFrame(
+            #         geometry=list(pool.map(
+            #             Polygon,
+            #             msh_t.vert2['coord'][msh_t.tria3['index'], :].tolist(),
+            #             # chunksize
+            #             )),
+            #         crs=msh_t.crs
+            #     )
+            original_mesh_gdf = gpd.GeoDataFrame(
+                geometry=list(map(
+                    Polygon,
+                    msh_t.vert2['coord'][msh_t.tria3['index'], :].tolist(),
+                    )),
+                crs=msh_t.crs
+            )
+            print("use join to remove elements that intersect", flush=True)
             joined = gpd.sjoin(
                     original_mesh_gdf.to_crs(self.quads_poly_gdf.crs),
                     self.quads_poly_gdf,
@@ -3738,21 +3754,21 @@ class Quads:
                     predicate='intersects',
                     )
             target_mesh = original_mesh_gdf.loc[joined[joined.index_right.isna()].index.unique()]
-            print("return target_mesh with quads to keep")
+            print("return target_mesh with quads to keep", flush=True)
             return pd.concat([target_mesh, self.quads_poly_gdf.to_crs(msh_t.crs)], ignore_index=True)
 
         def get_constrained_triangulation():
             target_mesh_gdf = get_target_mesh_gdf()
-            print("convert target_mesh_gdf into a graph")
+            print("convert target_mesh_gdf into a graph", flush=True)
             vertices, elements = poly_gdf_to_elements(target_mesh_gdf)
             t = cdt.Triangulation(
                     cdt.VertexInsertionOrder.AS_PROVIDED,
                     cdt.IntersectingConstraintEdges.RESOLVE,
                     0.
                     )
-            print("begin insert vertices")
+            print("begin insert vertices", flush=True)
             t.insert_vertices([cdt.V2d(*coord) for coord in vertices])
-            print("begin insert edges")
+            print("begin insert edges", flush=True)
             t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in elements_to_edges(elements)])
             return t, target_mesh_gdf.crs
 
@@ -3765,15 +3781,15 @@ class Quads:
                 # need to filter out. Normally, one would use erase_outer_triangles_and_holes() but in
                 # our tests, we see that it leads to significant over-filtering.
                 # Here we implement a custom filter for cdt.Triangulation.
-                print("erase outer triangles and holes")
+                print("erase outer triangles and holes", flush=True)
                 # Begin by erasing the super triangle, since we definitely don't need that one.
                 t.erase_super_triangle()
                 # t.erase_outer_triangles()
                 # we assume operations over members of t are not safe, so we extract the remaining
                 # outputs into numpy arrays.
-                print("make final vertices")
+                print("make final vertices", flush=True)
                 vertices = np.array([(v.x, v.y) for v in t.vertices])
-                print("make final elements")
+                print("make final elements", flush=True)
                 elements = np.array([tria.vertices for tria in t.triangles])
                 return vertices, elements, crs
 
@@ -3781,7 +3797,7 @@ class Quads:
                 vertices, all_elements, crs = get_vertices_and_unfiltered_elements()
 
                 def get_centroid_based_element_mask():
-                    print("get geom bound as geom_msh_t")
+                    print("get geom bound as geom_msh_t", flush=True)
                     original_geom_msh_t = utils.get_geom_msh_t_from_msh_t_as_msh_t(msh_t)
                     quads_bnd_as_msh_t = utils.multipolygon_to_jigsaw_msh_t(self.quads_poly_gdf_uu)
                     centroids = np.mean(vertices[all_elements, :], axis=1)
@@ -3801,7 +3817,7 @@ class Quads:
                 #     return pinched_node_mask
 
                 def get_element_indices_with_pinched_nodes(elements_to_consider):
-                    print("get element indices with pinched nodes")
+                    print("get element indices with pinched nodes", flush=True)
                     tri = Triangulation(vertices[:, 0], vertices[:, 1], elements_to_consider)
                     boundary_edges = tri.neighbors == -1
                     boundary_vertices = tri.triangles[boundary_edges]
@@ -3821,7 +3837,7 @@ class Quads:
                     return list(elements_with_pinched_nodes)
 
                 def separate_elements_by_pinched_nodes(target_elements, pinched_element_indices):
-                    print("separate elements by pinched nodes")
+                    print("separate elements by pinched nodes", flush=True)
 
                     # Use np.take to select elements with pinched nodes
                     elements_with_pinched_nodes = np.take(target_elements, pinched_element_indices, axis=0)
@@ -3849,7 +3865,7 @@ class Quads:
                 while len(pinched_element_indices) > 0:
                     elements_with_pinched_nodes, target_elements = separate_elements_by_pinched_nodes(target_elements, pinched_element_indices)
                     pinched_element_indices = get_element_indices_with_pinched_nodes(target_elements)
-                    print(pinched_element_indices)
+                    print(pinched_element_indices, flush=True)
                     # return target_elements
                     # with Pool(cpu_count()) as pool:
                     #     target_gdf = gpd.GeoDataFrame(
@@ -4030,15 +4046,15 @@ class Quads:
                         # plt.show(block=False)
                         # breakpoint()
                         # raise
-                print("done with vertices/element creation")
+                print("done with vertices/element creation", flush=True)
                 return vertices, target_elements, crs
             # target_elements = all_elements[get_final_element_mask(), :]
-            print("begin getting centroid based elements")
+            print("begin getting centroid based elements", flush=True)
             vertices, elements, crs = get_centroid_based_elements()
 
             # convert into the final_gdf and return
             with Pool(cpu_count()) as pool:
-                print("make final gdf")
+                print("make final gdf", flush=True)
                 final_gdf = gpd.GeoDataFrame(
                     geometry=list(pool.map(Polygon, vertices[elements, :].tolist())),
                     crs=crs,
@@ -4074,11 +4090,11 @@ class Quads:
 #             return final_gdf.drop(index=joined.index.unique())
 
         def get_final_mesh_gdf():
-            print("begin generating conforming tri_mesh_gdf")
+            print("begin generating conforming tri_mesh_gdf", flush=True)
             tri_mesh_gdf = get_conforming_tri_mesh_gdf()
             # return tri_mesh_gdf
 
-            print("begin replacing trias with quads")
+            print("begin replacing trias with quads", flush=True)
             joined = gpd.sjoin(
                     gpd.GeoDataFrame(geometry=tri_mesh_gdf.geometry.centroid, crs=tri_mesh_gdf.crs).to_crs("epsg:6933"),
                     self.quads_poly_gdf.to_crs("epsg:6933"),
@@ -4086,7 +4102,7 @@ class Quads:
                     predicate='within',
                     )
             tri_mesh_gdf.drop(index=tri_mesh_gdf.loc[~joined.index_right.isna()].index.unique(), inplace=True)
-            print("generate final_mesh_gdf (the hybrid one)")
+            print("generate final_mesh_gdf (the hybrid one)", flush=True)
             final_mesh_gdf = pd.concat([tri_mesh_gdf, self.quads_poly_gdf.to_crs(tri_mesh_gdf.crs)], ignore_index=True)
             return final_mesh_gdf
             print(joined)
@@ -4095,23 +4111,23 @@ class Quads:
             
             
             # find trias in final_mesh_gdf
-            
+
 
 
         def get_output_msh_t():
-            print("begin generating final_mesh_gdf")
+            print("begin generating final_mesh_gdf", flush=True)
             final_mesh_gdf = get_final_mesh_gdf()
             # verification
             # final_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
             # final_mesh_gdf.to_feather("finalized_mesh.feather")
             # plt.show(block=False)
             # breakpoint()
-            print("begin convering final_mesh_gdf to msh_t")
+            print("begin convering final_mesh_gdf to msh_t", flush=True)
             output_msh_t = self.jigsaw_msh_t_from_nodes_elements(*poly_gdf_to_elements(final_mesh_gdf), crs=final_mesh_gdf.crs)
-            print("split bad quality quads")
+            print("split bad quality quads", flush=True)
             utils.split_bad_quality_quads(output_msh_t)
             return output_msh_t
-        print("begin generating output_msh_t")
+        print("begin generating output_msh_t", flush=True)
         return get_output_msh_t()
     
     @staticmethod
