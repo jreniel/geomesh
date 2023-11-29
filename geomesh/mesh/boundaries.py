@@ -118,10 +118,6 @@ class Boundaries:
         interior_boundaries = []
         # cnt = 0
         tree = KDTree(self.hgrid.coord)
-        import matplotlib.pyplot as plt
-        self.hgrid.hull.rings().plot(ax=plt.gca())
-        plt.show(block=False)
-        breakpoint()
         for rings in self.hgrid.hull.rings.sorted().values():
             ring = rings['exterior']
             edge_tag = np.full(ring.shape, 0)
@@ -141,48 +137,28 @@ class Boundaries:
             ocean_linestrings = linemerge(ocean_edges)
             if isinstance(ocean_linestrings, LineString):
                 ocean_linestrings = MultiLineString([ocean_linestrings])
+
+            def add_linestring_to_ocean_boundaries(linestring, tree, hgrid, ocean_boundaries):
+                coords = np.array(linestring.coords)
+                _, ii = tree.query(coords)
+                index_id = list(map(hgrid.nodes.get_id_by_index, ii))
+                ocean_boundaries.append({
+                    "index_id": index_id,
+                    "indexes": ii,
+                    "geometry": linestring,
+                    "btype": 'ocean',
+                })
             for ocean_linestring in ocean_linestrings.geoms:
                 coords = np.array(ocean_linestring.coords)
 
-
-                # Note: If the LineString is a closed loop, SCHISM won't allow it (why not? it should be possible!)
-                # but we are going to fake it by forcing one edge to be land_edge and the rest remain as ocean_boundaries
-                # Maybe the user wants a circular open boundary!
-                if coords[0].tolist() == coords[-1].tolist():
-                    print("Detected a looped ocean_linestring:", ocean_linestring)
-                    # Create land edge using the first two coordinates                                                   
-                    print(f"{coords=}")
-                    # land_edge_coords = [coords[-2], coords[0]]
-                    land_edge_coords = [coords[0], coords[-2]]
-                    land_edges.append(LineString([Point(x, y) for x, y in land_edge_coords]))
-                    print("Created land edge from loop:", land_edges[-1])
-                    print(f"{land_edge_coords=}")
-                    # Create ocean linestring using all but the last coordinate (to avoid duplication with the first)    
-                    # coords = np.concatenate([coords[:1], coords[2:-1]])
-                    coords = coords[:-1]
-                    print(f"{coords=}")
-                    ocean_linestring = LineString(coords)
-                    print("Created open boundary from loop:", ocean_linestring)
-
-                if coords.shape[0] < min_open_bound_length:
-                    land_edges.append(
-                            # np.fliplr(bnd)
-                            LineString([Point(x, y) for x, y in np.flipud(coords)])
-                            )
-                    continue
-                _, ii = tree.query(coords)
-                index_id = list(map(self.hgrid.nodes.get_id_by_index, ii))
-                ocean_boundaries.append(
-                            {
-                                # "id": len(ocean_boundaries)+1,  # hacking it
-                                "index_id": index_id,
-                                "indexes": ii,
-                                "geometry": ocean_linestring,
-                                "btype": 'ocean',
-                            }
-                        )
-                # cnt += 1
-
+                if coords[0].tolist() == coords[-1].tolist():  # Check for cyclic linestring
+                    midpoint_index = len(coords) // 2
+                    first_half = LineString(coords[:midpoint_index + 1])
+                    second_half = LineString(coords[midpoint_index:])
+                    add_linestring_to_ocean_boundaries(first_half, tree, self.hgrid, ocean_boundaries)
+                    add_linestring_to_ocean_boundaries(second_half, tree, self.hgrid, ocean_boundaries)
+                else:
+                    add_linestring_to_ocean_boundaries(ocean_linestring, tree, self.hgrid, ocean_boundaries)
             land_linestrings = linemerge(land_edges)
             if isinstance(land_linestrings, LineString):
                 land_linestrings = MultiLineString([land_linestrings])

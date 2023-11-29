@@ -102,30 +102,37 @@ def multipolygon_to_jigsaw_msh_t(
     if isinstance(src_crs, str):
         src_crs = CRS.from_user_input(src_crs)
 
-    vert2: List[Tuple[Tuple[float, float], int]] = list()
+    # vert2: List[Tuple[Tuple[float, float], int]] = list()
+    # for polygon in multipolygon.geoms:
+    #     for x, y in polygon.exterior.coords[:-1]:
+    #         vert2.append(((x, y), 0))
+    #     for interior in polygon.interiors:
+    #         for x, y in interior.coords[:-1]:
+    #             vert2.append(((x, y), 0))
+    vert2 = [((x, y), 0) for polygon in multipolygon.geoms
+             for ring in [polygon.exterior, *polygon.interiors]
+             for x, y in ring.coords[:-1]]
+    edge2 = []
+    offset = 0
     for polygon in multipolygon.geoms:
-        if np.all(
-                np.asarray(
-                    polygon.exterior.coords).flatten() == float('inf')):
-            raise NotImplementedError("ellipsoidal-mesh")
-        for x, y in polygon.exterior.coords[:-1]:
-            vert2.append(((x, y), 0))
-        for interior in polygon.interiors:
-            for x, y in interior.coords[:-1]:
-                vert2.append(((x, y), 0))
+        for linear_ring in [polygon.exterior, *polygon.interiors]:
+            n = len(linear_ring.coords) - 1  # Adjust for the looped back coordinate
+            edges = [((i + offset, (i + 1) % n + offset), 0) for i in range(n)]
+            edge2.extend(edges)
+            offset += n
 
-    # edge2
-    edge2: List[Tuple[int, int]] = list()
-    for polygon in multipolygon.geoms:
-        polygon = [polygon.exterior, *polygon.interiors]
-        for linear_ring in polygon:
-            _edge2 = list()
-            for i in range(len(linear_ring.coords)-2):
-                _edge2.append((i, i+1))
-            _edge2.append((_edge2[-1][1], _edge2[0][0]))
-            edge2.extend(
-                [(e0+len(edge2), e1+len(edge2))
-                    for e0, e1 in _edge2])
+#     # edge2
+#     edge2: List[Tuple[int, int]] = list()
+#     for polygon in multipolygon.geoms:
+#         polygon = [polygon.exterior, *polygon.interiors]
+#         for linear_ring in polygon:
+#             _edge2 = list()
+#             for i in range(len(linear_ring.coords)-2):
+#                 _edge2.append(((i, i+1), 0))
+#             _edge2.append((_edge2[-1][1], _edge2[0][0]))
+#             edge2.extend(
+#                 [((e0+len(edge2), e1+len(edge2), 0))
+#                     for e0, e1 in _edge2])
     # geom
     msh_t = jigsaw_msh_t()
     msh_t.ndims = +2
@@ -133,10 +140,8 @@ def multipolygon_to_jigsaw_msh_t(
     # TODO: Consider ellipsoidal case.
     # msh_t.mshID = 'euclidean-mesh' if self._ellipsoid is None \
     #     else 'ellipsoidal-mesh'
-    msh_t.vert2 = np.asarray(vert2, dtype=jigsaw_msh_t.VERT2_t)
-    msh_t.edge2 = np.asarray(
-        [((e0, e1), 0) for e0, e1 in edge2],
-        dtype=jigsaw_msh_t.EDGE2_t)
+    msh_t.vert2 = np.array(vert2, dtype=jigsaw_msh_t.VERT2_t)
+    msh_t.edge2 = np.array(edge2, dtype=jigsaw_msh_t.EDGE2_t)
     msh_t.crs = src_crs
     if src_crs is not None and dst_crs is not None:
         if not src_crs.equals(dst_crs):

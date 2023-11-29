@@ -1425,3 +1425,16 @@ def interpolate_euclidean_grid_to_euclidean_mesh(
         dtype=jigsaw_msh_t.REALS_t)
 
 
+def test_filter_polygons_nested():
+    from shapely.geometry import Polygon
+    outer_polygon = Polygon([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)])
+    hole1 = Polygon([(2, 2), (8, 2), (8, 8), (2, 8), (2, 2)])
+    polygon2 = Polygon([(3, 3), (7, 3), (7, 7), (3, 7), (3, 3)])
+    hole2 = Polygon([(4, 4), (6, 4), (6, 6), (4, 6), (4, 4)])
+    polygon3 = Polygon([(4.5, 4.5), (5.5, 4.5), (5.5, 5.5), (4.5, 5.5), (4.5, 4.5)])
+    nested_polygon = Polygon(shell=outer_polygon.exterior.coords, holes=[hole1.exterior.coords, hole2.exterior.coords])
+    polygons = [nested_polygon, outer_polygon, hole1, polygon2, hole2, polygon3]
+    polygons = filter_polygons(polygons, CRS.from_epsg(3857))
+    gpd.GeoDataFrame(geometry=polygons, crs=CRS.from_epsg(3857)).plot(ax=plt.gca(), alpha=0.3, edgecolor='k')
+    plt.show(block=True)
+
