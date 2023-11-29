@@ -3724,7 +3724,7 @@ class Quads:
                 print("erase outer triangles and holes")
                 # Begin by erasing the super triangle, since we definitely don't need that one.
                 t.erase_super_triangle()
-
+                # t.erase_outer_triangles()
                 # we assume operations over members of t are not safe, so we extract the remaining
                 # outputs into numpy arrays.
                 print("make final vertices")
@@ -3736,6 +3736,7 @@ class Quads:
             def get_centroid_based_elements():
 
                 vertices, all_elements, crs = get_vertices_and_unfiltered_elements()
+
                 def get_centroid_based_element_mask():
                     print("get geom bound as geom_msh_t")
                     original_geom_msh_t = utils.get_geom_msh_t_from_msh_t_as_msh_t(msh_t)
@@ -3743,66 +3744,128 @@ class Quads:
                     centroids = np.mean(vertices[all_elements, :], axis=1)
                     centroid_in_base_poly = np.array(inpoly2(centroids, original_geom_msh_t.vert2['coord'], original_geom_msh_t.edge2['index'])[0], dtype=bool)
                     centroid_in_quads_poly = np.array(inpoly2(centroids, quads_bnd_as_msh_t.vert2['coord'], quads_bnd_as_msh_t.edge2['index'])[0], dtype=bool)
-                    # return [in_base | in_quad for in_base, in_quad in zip(centroid_in_base_poly, centroid_in_quads_poly)]
                     return np.logical_or(centroid_in_base_poly, centroid_in_quads_poly)
-
                 centroid_based_element_mask = get_centroid_based_element_mask()
-                centroid_based_elements = all_elements[centroid_based_element_mask, :]
+                target_elements = all_elements[centroid_based_element_mask, :]
 
-                def get_pinched_node_vertex_indices(elements_to_consider):
+
+                # def get_pinched_node_vertex_indices(elements_to_consider):
+                #     tri = Triangulation(vertices[:, 0], vertices[:, 1], elements_to_consider)
+                #     boundary_edges = tri.neighbors == -1
+                #     boundary_vertices = tri.triangles[boundary_edges]
+                #     boundary_vertices_flat = boundary_vertices.flatten()
+                #     unique, inverse, counts = np.unique(boundary_vertices_flat, return_inverse=True, return_counts=True)
+                #     pinched_node_mask = unique[counts > 1]
+                #     return pinched_node_mask
+
+                def get_element_indices_with_pinched_nodes(elements_to_consider):
                     tri = Triangulation(vertices[:, 0], vertices[:, 1], elements_to_consider)
                     boundary_edges = tri.neighbors == -1
                     boundary_vertices = tri.triangles[boundary_edges]
                     boundary_vertices_flat = boundary_vertices.flatten()
-                    unique, inverse, counts = np.unique(boundary_vertices_flat, return_inverse=True, return_counts=True)
-                    pinched_node_mask = unique[counts > 1]
-                    return pinched_node_mask
-                pinched_node_vertex_indices = get_pinched_node_vertex_indices(centroid_based_elements)
-                previous_pinched_node_vertex_indices = set()
-                while previous_pinched_node_vertex_indices != set(pinched_node_vertex_indices):
-                    previous_pinched_node_vertex_indices = set(pinched_node_vertex_indices)
-                    not_centroid_based_elements = all_elements[~centroid_based_element_mask, :]
-                    contains_pinched_node_mask = np.any(np.isin(not_centroid_based_elements, pinched_node_vertex_indices), axis=1)
-                    element_candidates = not_centroid_based_elements[contains_pinched_node_mask, :]
+                    unique, counts = np.unique(boundary_vertices_flat, return_counts=True)
+                    pinched_nodes = unique[counts > 1]
+                    vertex_to_elements = {}
+                    for idx, element in enumerate(tri.triangles):
+                        for vertex in element:
+                            if vertex in vertex_to_elements:
+                                vertex_to_elements[vertex].add(idx)
+                            else:
+                                vertex_to_elements[vertex] = {idx}
+                    elements_with_pinched_nodes = set()
+                    for node in pinched_nodes:
+                        elements_with_pinched_nodes.update(vertex_to_elements[node])
+                    return list(elements_with_pinched_nodes)
 
-                    centroid_edges = [set(map(tuple, np.sort(np.column_stack((tri, np.roll(tri, -1))), axis=1)))
-                                      for tri in all_elements[centroid_based_element_mask]]
-                    centroid_edges = set.union(*centroid_edges)
 
-                    # This will store the indices of the candidates that share at least two edges
-                    selected_candidates_indices = []
+                def separate_elements_by_pinched_nodes(target_elements, pinched_element_indices):
+                    # Initialize lists for elements with and without pinched nodes
+                    elements_with_pinched_nodes = []
+                    elements_without_pinched_nodes = []
 
-                    # Check each candidate in element_candidates
-                    for i, candidate in enumerate(element_candidates):
-                        candidate_edges = set(map(tuple, np.sort(np.column_stack((candidate, np.roll(candidate, -1))), axis=1)))
-                        if len(candidate_edges & centroid_edges) >= 2:
-                            # don't use flat triangles
-                            p0, p1, p2 = tuple(vertices[candidate[0]]), tuple(vertices[candidate[1]]), tuple(vertices[candidate[2]])
-                            if not slope_collinearity_test(p0, p1, p2):
-                                # Triangle is not flat, add to selected candidates
-                                selected_candidates_indices.append(i)
-                    element_candidates = element_candidates[selected_candidates_indices]
-                    # Using the indices to filter the element_candidates
-                    centroid_based_elements = np.vstack([centroid_based_elements, element_candidates])
-                    centroid_based_element_mask = np.isin(np.arange(len(all_elements)), centroid_based_elements, assume_unique=True)
-                    pinched_node_vertex_indices = get_pinched_node_vertex_indices(centroid_based_elements)
+                    # Iterate over target elements
+                    for idx, element in enumerate(target_elements):
+                        if idx in pinched_element_indices:
+                            elements_with_pinched_nodes.append(element)
+                        else:
+                            elements_without_pinched_nodes.append(element)
 
-                contains_pinched_node_mask = np.any(np.isin(centroid_based_elements, pinched_node_vertex_indices), axis=1)
-                centroid_based_elements = centroid_based_elements[~contains_pinched_node_mask, :]
-                # with Pool(cpu_count()) as pool:
-                #     centroid_based_elements_gdf = gpd.GeoDataFrame(
-                #         geometry=list(pool.map(Polygon, vertices[centroid_based_elements, :].tolist())),
-                #         crs=crs,
-                #         )
+                    return elements_with_pinched_nodes, elements_without_pinched_nodes
 
-                # centroid_based_elements_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
-                # for x, y, label in zip(centroid_based_elements_gdf.geometry.centroid.x, centroid_based_elements_gdf.geometry.centroid.y, centroid_based_elements_gdf.index):
+                pinched_element_indices = get_element_indices_with_pinched_nodes(target_elements)
+                elements_with_pinched_nodes, target_elements = separate_elements_by_pinched_nodes(target_elements, pinched_element_indices)
+
+                with Pool(cpu_count()) as pool:
+                    target_gdf = gpd.GeoDataFrame(
+                        geometry=list(pool.map(Polygon, vertices[target_elements, :].tolist())),
+                        crs=crs,
+                        )
+                    pinched_gdf = gpd.GeoDataFrame(
+                        geometry=list(pool.map(Polygon, vertices[elements_with_pinched_nodes, :].tolist())),
+                        crs=crs,
+                        )
+                quads_poly_gdf_uu_buffered_gdf = gpd.GeoDataFrame(geometry=[self.quads_poly_gdf_uu.buffer(np.finfo(np.float32).eps)], crs=self.quads_poly_gdf.crs).to_crs(crs)
+                joined = gpd.sjoin(
+                        pinched_gdf,
+                        quads_poly_gdf_uu_buffered_gdf,
+                        how='left',
+                        predicate='within'
+                        )
+
+                within_quads_indices = joined[~joined.index_right.isna()].index
+                pinched_gdf.drop(index=within_quads_indices, inplace=True)
+                # pinched_gdf.reset_index(drop=True)
+                original_geom_mp = utils.get_geom_msh_t_from_msh_t_as_mp(msh_t)
+                joined = gpd.sjoin(
+                        pinched_gdf,
+                        gpd.GeoDataFrame(geometry=[original_geom_mp.buffer(np.finfo(np.float32).eps)], crs=msh_t.crs).to_crs(crs),
+                        how='left',
+                        predicate='within'
+                        )
+                within_geom_indices = joined[~joined.index_right.isna()].index
+                elements_to_put_back = np.array(elements_with_pinched_nodes)[np.hstack([within_geom_indices, within_quads_indices])]
+                target_elements = np.vstack([target_elements, elements_to_put_back])
+
+
+                pinched_element_indices = get_element_indices_with_pinched_nodes(target_elements)
+                elements_with_pinched_nodes, target_elements = separate_elements_by_pinched_nodes(target_elements, pinched_element_indices)
+
+                with Pool(cpu_count()) as pool:
+                    # target_gdf = gpd.GeoDataFrame(
+                    #     geometry=list(pool.map(Polygon, vertices[target_elements, :].tolist())),
+                    #     crs=crs,
+                    #     )
+                    pinched_gdf = gpd.GeoDataFrame(
+                        geometry=list(pool.map(Polygon, vertices[elements_with_pinched_nodes, :].tolist())),
+                        crs=crs,
+                        )
+                joined = gpd.sjoin(
+                        pinched_gdf,
+                        quads_poly_gdf_uu_buffered_gdf,
+                        how='left',
+                        predicate='within'
+                        )
+
+                # pinched_gdf.drop(index=within_quads_indices, inplace=True)
+                within_quads_indices = joined[~joined.index_right.isna()].index
+                elements_to_put_back = np.array(elements_with_pinched_nodes)[within_quads_indices]
+                target_elements = np.vstack([target_elements, elements_to_put_back])
+
+
+                # target_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+                # pinched_gdf.plot(ax=plt.gca(), facecolor='r', edgecolor='r', alpha=0.3, linewidth=0.3)
+                # gpd.GeoDataFrame(geometry=[utils.get_geom_msh_t_from_msh_t_as_mp(msh_t)], crs=msh_t.crs).plot(ax=plt.gca(), facecolor='none', edgecolor='b')
+                # gpd.GeoDataFrame(geometry=[self.quads_poly_gdf_uu], crs=self.quads_poly_gdf.crs).to_crs(msh_t.crs).plot(ax=plt.gca(), facecolor='none', edgecolor='r')
+                # gpd.GeoDataFrame(geometry=[Point(*vertices[x]) for x in pinched_node_vertex_indices], crs=msh_t.crs).plot(ax=plt.gca(), marker='*', color='g')
+                # for x, y, label in zip(target_gdf.geometry.centroid.x, target_gdf.geometry.centroid.y, target_gdf.index):
                 #     if label != 12 or label != 88:
                 #         continue
                 #     plt.gca().text(x, y, str(label), fontsize=16, color='r')
                 # plt.show(block=False)
                 # breakpoint()
-                return vertices, centroid_based_elements, crs
+                # raise
+
+                return vertices, target_elements, crs
             # target_elements = all_elements[get_final_element_mask(), :]
             vertices, elements, crs = get_centroid_based_elements()
 
@@ -5273,40 +5336,42 @@ def test_quadgen_for_Harlem_River():
     # quads.plot(ax=plt.gca(), facecolor='none')
     # plt.show(block=True)
     # raster.resampling_factor = 0.2
-    # geom = Geom(
-    #         raster,
-    #         zmax=10.,
-    #         )
-    # hfun = Hfun(
-    #         raster,
-    #         nprocs=cpu_count(),
-    #         verbosity=1.,
-    #         )
-    # hfun.add_contour(
-    #         0.,
-    #         target_size=100.,
-    #         expansion_rate=0.007
-    #         )
-    # hfun.add_contour(
-    #         10.,
-    #         target_size=100.,
-    #         expansion_rate=0.007
-    #         )
-    # hfun.add_constant_value(
-    #         value=500.,
-    #         # lower_bound=0.
-    #         )
-    # driver = JigsawDriver(
-    #         geom=geom,
-    #         hfun=hfun,
-    #         verbosity=1,
-    #         # sieve_area=True,
-    #         # finalize=False,
-    #         )
-    # driver.opts.geom_feat = True
-    # old_msh_t = driver.msh_t()
-    # pickle.dump(old_msh_t, open("the_old_msh_t.pkl", "wb"))
-    old_msh_t = pickle.load(open("the_old_msh_t.pkl", "rb"))
+    if Path("the_old_msh_t.pkl").is_file():
+        old_msh_t = pickle.load(open("the_old_msh_t.pkl", "rb"))
+    else:
+        geom = Geom(
+                raster,
+                zmax=10.,
+                )
+        hfun = Hfun(
+                raster,
+                nprocs=cpu_count(),
+                verbosity=1.,
+                )
+        hfun.add_contour(
+                0.,
+                target_size=100.,
+                expansion_rate=0.007
+                )
+        hfun.add_contour(
+                10.,
+                target_size=100.,
+                expansion_rate=0.007
+                )
+        hfun.add_constant_value(
+                value=500.,
+                # lower_bound=0.
+                )
+        driver = JigsawDriver(
+                geom=geom,
+                hfun=hfun,
+                verbosity=1,
+                # sieve=True,
+                # finalize=False,
+                )
+        # driver.opts.geom_feat = True
+        old_msh_t = driver.msh_t()
+        pickle.dump(old_msh_t, open("the_old_msh_t.pkl", "wb"))
     # raise NotImplementedError("ready")
     new_msh_t = old_msh_t
     new_msh_t = quads(old_msh_t)
