@@ -613,9 +613,15 @@ def split_bad_quality_quads(
         def angle(a, b, c):
             ba = a - b
             bc = c - b
-            cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-            angle = np.arccos(cosine_angle)
-            return np.degrees(angle)
+            dot_p = np.dot(ba, bc)
+            mag_prod = np.linalg.norm(ba) * np.linalg.norm(bc)
+            if mag_prod == 0:
+                return 0
+            else:
+                # Clip the value to avoid RuntimeWarning in arccos
+                clipped_value = np.clip(dot_p / mag_prod, -1.0, 1.0)
+                angle = np.arccos(clipped_value)
+                return np.degrees(angle)
 
         # Calculate the angles of the triangle
         angles = [
