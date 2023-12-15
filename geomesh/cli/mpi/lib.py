@@ -1,17 +1,44 @@
-import hashlib
-import logging
-import json
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
+from time import time
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
+import hashlib
+import inspect
+import json
+import logging
+import tempfile
+import warnings
 
+from colored_traceback.colored_traceback import Colorizer
+from dask_geopandas.hilbert_distance import _hilbert_distance
 from mpi4py import MPI
+from mpi4py.futures import MPICommExecutor
 from psutil import cpu_count
+from pydantic import BaseModel
+from pydantic import model_validator
 from pyproj import CRS
+from scipy.optimize import curve_fit
+from shapely import LineString
+from shapely import MultiPolygon
+from shapely import Polygon
+from shapely import ops
+import dask_geopandas as dgpd
 import geopandas as gpd
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 
-from geomesh import Geom
+from geomesh.cli.raster_opts import expand_raster_request_path
+from geomesh.cli.raster_opts import expand_tile_index
 from geomesh.cli.raster_opts import get_raster_from_opts
+from geomesh.cli.raster_opts import iter_raster_windows
+from geomesh.geom.raster import RasterGeom
 
 logger = logging.getLogger(__name__)
 
@@ -194,3 +221,190 @@ def get_bbox_gdf(comm, raster_window_request, cache_directory, raster_hashes):
     #     bbox_gdf.plot(facecolor='none', cmap='jet')
     #     plt.show(block=True)
     return bbox_gdf
+
+
+
+
+
+def mpiabort_excepthook(type, value, traceback):
+    Colorizer('default').colorize_traceback(type, value, traceback)
+    MPI.COMM_WORLD.Abort(-1)
+
+
+class BboxConfig(BaseModel):
+    xmin: float
+    xmax: float
+    ymin: float
+    ymax: float
+    crs: Optional[str] = None
+
+
+
+# from enum import Enum
+
+# class ClipType(Enum):
+#     PATH = 'path'
+#     DICT = 'dict'
+
+
+# class PathClipConfig(BaseModel):
+#     type: ClipType = ClipType.PATH
+#     path: str
+
+# class DictClipConfig(BaseModel):
+#     type: ClipType = ClipType.DICT
+#     config: Dict[str, float]
+
+from pydantic.class_validators import validator
+
+
+# RasterClipConfigTypes = Union[dict, str]
+
+class RasterClipStrConfig(BaseModel):
+    path: Path
+
+RasterClipConfigTypes = Union[RasterClipStrConfig]
+
+class RasterConfig(BaseModel):
+    path: Optional[str] = None
+    tile_index: Optional[Path] = None
+    resampling_factor: Optional[float] = None
+    clip: Optional[RasterClipConfigTypes] = None
+    overlap: Optional[int] = 0
+    chunk_size: Optional[int] = None
+    bbox: Optional[BboxConfig] = None
+    crs: Optional[str] = None
+    _normalization_keys = [
+            "resampling_factor",
+            "clip",
+            "bbox",
+            ]
+
+
+    @model_validator(mode='before')
+    @classmethod
+    def precheck(cls, data: Any) -> Any:
+        path = data.get('path')
+        tile_index = data.get('tile_index')
+        if path and tile_index:
+            raise ValueError("path and tile_index are mutually exclusive.")
+        if not path and not tile_index:
+            raise ValueError("One of path or tile_index is required.")
+        clip = data.get('clip')
+        if clip is not None:
+            if isinstance(clip, str):
+                data['clip'] = RasterClipStrConfig(path=Path(clip).resolve())
+            elif isinstance(clip, dict):
+                pass
+            else:
+                raise ValueError("`clip` key must be a string")
+        crs = data.get("crs")
+        if crs is not None:
+            data['crs'] = CRS.from_user_input(data["crs"])
+        # print(data.get('bbox'))
+        return data
+
+
+    # @model_validator(mode='after')
+    # def postcheck(self) -> "Self":
+    #     if self.bbox is not None:
+
+    #     pass
+
+
+    def iter_raster_requests(self):
+        global_kwargs = self.model_dump()
+        global_kwargs.pop("path")
+        global_kwargs.pop("tile_index")
+        if self.path:
+            for fname, raster_request in expand_raster_request_path({"path": self.path, **global_kwargs}):
+                yield fname, global_kwargs
+        elif self.tile_index:
+            for fname, raster_request in expand_tile_index(self, {"tile_index": self.tile_index, **global_kwargs}):
+                yield fname, global_kwargs
+        else:
+            raise NotImplementedError("Unreachable: neither self.path nor self.tile_index")
+
+    def iter_normalized_raster_requests(self):
+        for raster_path, raster_request in self.iter_raster_requests():
+            yield raster_path, {key: raster_request[key] for key in self._normalization_keys}
+
+    def iter_raster_window_requests(self):
+        for i, (raster_path, request_opts) in enumerate(list(self.iter_raster_requests())):
+            for j, window in iter_raster_windows(raster_path, request_opts):
+                yield (i, raster_path, request_opts), (j, window)
+
+    def iter_normalized_raster_window_requests(self):
+        for i, (raster_path, request_opts) in enumerate(list(self.iter_normalized_raster_requests())):
+            for j, window in iter_raster_windows(raster_path, {**request_opts, 'chunk_size': self.chunk_size, 'overlap': self.overlap}):
+                yield (i, raster_path, request_opts), (j, window)
+
+
+
+
+
+class IterableRasterWindowTrait:
+
+    def iter_raster_window_requests(self):
+        for raster_config in self.rasters:
+            for this_raster_config in raster_config.iter_raster_window_requests():
+                yield this_raster_config
+
+    def iter_raster_requests(self):
+        for raster_config in self.rasters:
+            for this_raster_config in raster_config.iter_raster_requests():
+                yield this_raster_config
+
+    def iter_normalized_raster_requests(self):
+        for raster_config in self.rasters:
+            for this_raster_config in raster_config.iter_normalized_raster_requests():
+                yield this_raster_config
+
+    def iter_normalized_raster_window_requests(self):
+        for raster_config in self.rasters:
+            for this_raster_config in raster_config.iter_normalized_raster_window_requests():
+                yield this_raster_config
+
+    def df(self):
+        df = pd.DataFrame([{'path': raster_path, 'window': window, **request_opts} for (_, raster_path, request_opts), (_, window) in self.iter_raster_window_requests()])
+        if df.empty:
+            global_kwargs = self.model_dump()
+            global_kwargs.pop("path")
+            global_kwargs.pop("tile_index")
+            return pd.DataFrame(columns=['path', 'window', *list(global_kwargs)])
+        return df
+
+
+
+
+
+
+# class MeshgenConfig(BaseModel):
+
+#     geom: Optional[GeomConfig]
+#     hfun: Optional[HfunConfig]
+
+#     @classmethod
+#     def try_from_yaml_path(cls, path: Path) -> "MeshgenConfig":
+#         import yaml
+#         with open(path, 'r') as file:
+#             data = yaml.safe_load(file)
+#         return cls.try_from_dict(data)
+
+#     @classmethod
+#     def try_from_dict(cls, data: dict) -> "MeshgenConfig":
+#         if 'hgrid' in data:
+#             data = data['hgrid']
+#         geom_config = GeomConfig(**data['geom']) if 'geom' in data else GeomConfig(rasters=[])
+#         hfun_config = HfunConfig(**data['hfun']) if 'hfun' in data else HfunConfig(rasters=[])
+#         return cls(
+#                 geom=geom_config,
+#                 hfun=hfun_config,
+#             )
+
+
+
+
+
+
+

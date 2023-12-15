@@ -5,12 +5,23 @@ from typing import Union
 
 from geomesh.geom.base import BaseGeom
 
+from enum import Enum
+
+
 
 class ShapelyGeom(BaseGeom):
-    """ Base class for geoms based on shapely objects """
+    """
+    Factory class that creates concrete instances (subclasses) of Geom from different sources.
+    """
+
+    def __new__(cls, geom, **kwargs):
+        """
+        :param geom: Object to use as input to compute the output mesh hull.
+        """
+        return ShapelyGeomInputType[geom.__class__.__name__].value(geom, **kwargs)
 
 
-class PolygonGeom(ShapelyGeom):
+class PolygonGeom(BaseGeom):
 
     def __init__(self, polygon: Polygon, crs: Union[CRS, str]):
         assert isinstance(polygon, Polygon)
@@ -29,7 +40,7 @@ class PolygonGeom(ShapelyGeom):
         return self._crs
 
 
-class MultiPolygonGeom(ShapelyGeom):
+class MultiPolygonGeom(BaseGeom):
 
     def __init__(self, multipolygon: MultiPolygon, crs: Union[CRS, str]):
         assert isinstance(multipolygon, MultiPolygon)
@@ -53,3 +64,12 @@ class MultiPolygonGeom(ShapelyGeom):
     @property
     def multipolygon(self):
         return self._multipolygon
+
+class ShapelyGeomInputType(Enum):
+    
+    MultiPolygon = MultiPolygonGeom
+    Polygon = PolygonGeom
+
+    @classmethod
+    def _missing_(cls, name):
+        raise TypeError(f"Unhandled type {name} for argument geom.")

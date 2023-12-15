@@ -151,6 +151,11 @@ class Raster:
             # breakpoint()
             # yield x, y, z
 
+    def contourf(self, ax=None):
+        ax = ax or plt.gca()
+        for x, y, z in self:
+            ax.contourf(x, y, z)
+        return ax
     #     for window in self.iter_windows():
     #         yield window, self.get_window_bounds(window)
 
@@ -1134,3 +1139,24 @@ def get_iter_windows(
 #         multipolygon = MultiPolygon(
 #             [Polygon(linear_ring_collection.pop())])
 #     return multipolygon
+
+
+def test_raster_window_read():
+    from rasterio.windows import Window
+    raster_path="/sciclone/pscr/jrcalzada/thesis/.git/modules/runs/tropicald-validations/modules/data/prusvi_19_topobathy_2019/annex/objects/36/xM/MD5E-s165602212--c49959a2e85389cdeba86045b080a6e4.tif/MD5E-s165602212--c49959a2e85389cdeba86045b080a6e4.tif"
+    window = Window(col_off=4447, row_off=0, width=3665, height=7297)
+
+    raster = Raster(raster_path, window=window, resampling_factor=0.2)
+    raster.make_plot(show=True)
+    for xval, yval, zvals in raster:
+        print(xval, yval, zvals)
+    raise
+
+#                     indexes_right = joined.loc[joined.index == k, 'index_right'].dropna()
+#                     group = groups.get_group(k)
+#                     if len(group) > 0:
+#                         local_contours_gdf = hfun_raster_window_contours_gdf.loc[group.index_right]
+#                         hfun_constraints["contour"] = local_contours_gdf
+#                         hfun_request_opts["nprocs"] = self._compute_hfun_nprocs(max_threads, local_contours_gdf)
+#                     else:
+#                         hfun_constraints["contour"] = None

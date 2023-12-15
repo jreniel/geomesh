@@ -323,16 +323,16 @@ def expand_raster_request_path(request: Dict) -> Generator:
                 ))
                 if not request_bbox.overlaps(raster_bbox):
                     continue
-                if 'clip' in request:
-                    clip = _load_geometry_file(request['clip']).to_crs(profile['crs'])
+                if 'clip' in request and request['clip'] is not None:
+                    clip = _load_geometry_file(request['clip']['path']).to_crs(profile['crs'])
                     if not np.any(clip.intersects(box(*request_bbox.get_points().flatten()))):
                         continue
-                if 'mask' in request:
+                if 'mask' in request and request['mask'] is not None:
                     raise NotImplementedError('[FutureMeError]: lines are untested')
-                    mask = _load_geometry_file(request['mask']).to_crs(profile['crs'])
+                    mask = _load_geometry_file(request['mask']['path']).to_crs(profile['crs'])
                     if not np.all(mask.intersects(box(*request_bbox.get_points().flatten()))):
                         continue
-            yield path, request
+            yield Path(path).resolve(), request
 
 
 def get_bbox_from_request(raster_path, request_opts):
@@ -345,15 +345,16 @@ def get_bbox_from_request(raster_path, request_opts):
         profile['transform'],
     )
     # print(x0, y0, x1, y1)
-    xmin = request_opts['bbox'].get('xmin', x0)
-    ymin = request_opts['bbox'].get('ymin', y0)
-    xmax = request_opts['bbox'].get('xmax', x1)
-    ymax = request_opts['bbox'].get('ymax', y1)
+    bbox_request = request_opts.get('bbox') or {}
+    xmin = bbox_request.get('xmin', x0)
+    ymin = bbox_request.get('ymin', y0)
+    xmax = bbox_request.get('xmax', x1)
+    ymax = bbox_request.get('ymax', y1)
 
     bbox = Bbox.from_extents(xmin, ymin, xmax, ymax)
 
-    if 'crs' in request_opts:
-        bbox_crs = CRS.from_user_input(request_opts['bbox_crs'])
+    if 'crs' in request_opts and request_opts['crs'] is not None:
+        bbox_crs = CRS.from_user_input(request_opts['crs'])
     else:
         bbox_crs = CRS.from_user_input(profile['crs'])
 
@@ -369,102 +370,108 @@ def transform_bbox(bbox, bbox_crs, dst_crs):
     return Bbox.from_extents(xmin, ymin, xmax, ymax)
 
 
+def iter_raster_windows(raster_path, request_opts):
+    with rasterio.open(raster_path) as src:
+        profile = src.profile
+
+    if 'bbox' in request_opts and request_opts['bbox'] is not None:
+        x0, y0, x1, y1 = rasterio.transform.array_bounds(
+            profile['height'],
+            profile['width'],
+            profile['transform'],
+        )
+        # print(x0, y0, x1, y1)
+        bbox_dump = request_opts['bbox'].model_dump()
+        xmin = bbox_dump.get('xmin', x0)
+        ymin = bbox_dump.get('ymin', y0)
+        xmax = bbox_dump.get('xmax', x1)
+        ymax = bbox_dump.get('ymax', y1)
+
+        xmin = np.max([x0, xmin])
+        ymin = np.max([y0, ymin])
+        xmax = np.min([x1, xmax])
+        ymax = np.min([y1, ymax])
+
+        bbox = Bbox.from_extents(xmin, ymin, xmax, ymax)
+
+        if 'crs' in bbox_dump and bbox_dump['crs'] is not None:
+            bbox_crs = CRS.from_user_input(bbox_dump['crs'])
+        else:
+            bbox_crs = CRS.from_user_input(profile['crs'])
+
+        if not bbox_crs.equals(CRS.from_user_input(profile['crs'])):
+            bbox = transform_bbox(bbox, bbox_crs, profile['crs'])
+
+        window = rasterio.windows.from_bounds(
+                # x0, y0, x1, y1,
+                bbox.xmin, bbox.ymin, bbox.xmax, bbox.ymax,
+                transform=profile['transform'],
+                # height=profile['height'],
+                # width=profile['width'],
+                )
+        row_off = int(np.floor(window.row_off))
+        col_off = int(np.floor(window.col_off))
+        width = min([int(np.ceil(window.width)), profile['width']])
+        height = min([int(np.ceil(window.height)), profile['height']])
+    else:
+        row_off = 0
+        col_off = 0
+        width = profile['width']
+        height = profile['height']
+
+    chunk_size = request_opts.get('chunk_size')
+    if chunk_size is not None:
+        resampling_factor = request_opts.get('resampling_factor')
+        if resampling_factor is not None:
+            chunk_size /= resampling_factor
+    # clip = request_opts.get('clip')
+    # from geomesh.cli.mpi.lib import RasterClipStrConfig
+    # if clip is not None:
+    #     # what type of clip?
+    #     if isinstance(clip, RasterClipStrConfig):
+    #         # We assume strings to be loadable by geopandas.
+    #         # There is a function later that will determine whether or not
+    #         # it is geopandas loadable, and that should probably be done here
+    #         # instead.
+    #         request_opts.update({'clip': Path(clip)})
+    #     elif isinstance(clip, Path):
+    #         pass
+    #     elif isinstance(clip, dict):
+    #         if 'mesh' in clip:
+    #             if cache_directory is None:
+    #                 # TODO: fix this shortcut
+    #                 cache_directory = Path('/tmp')
+    #             outname = cache_directory / f'{get_digest(clip["mesh"])}.feather'
+    #             if outname.exists():
+    #                 request_opts.update({'clip': outname})
+    #             else:
+    #                 crs = clip.get('crs')
+    #                 if crs is not None:
+    #                     crs = CRS.from_user_input(crs)
+    #                 mesh = Mesh.open(clip['mesh'], crs=crs)
+    #                 clip_poly = mesh.hull.multipolygon()
+    #                 gpd.GeoDataFrame([{'geometry': clip_poly}], crs=crs).to_feather(outname)
+    #                 request_opts.update({'clip': outname})
+    #     else:
+    #         raise NotImplementedError(
+    #                 f'Unhandled clip argument for {raster_path} as {clip}.'
+    #             )
+
+    for j, window in enumerate(get_iter_windows(
+            width,
+            height,
+            chunk_size=chunk_size,
+            overlap=request_opts.get('overlap', 0),
+            row_off=row_off,
+            col_off=col_off,
+            )):
+        yield j, window
+
 def iter_raster_window_requests(config_request, cache_directory=None):
 
     for i, (raster_path, request_opts) in enumerate(iter_raster_requests(config_request)):
-        with rasterio.open(raster_path) as src:
-            profile = src.profile
-
-        if 'bbox' in request_opts:
-            x0, y0, x1, y1 = rasterio.transform.array_bounds(
-                profile['height'],
-                profile['width'],
-                profile['transform'],
-            )
-            # print(x0, y0, x1, y1)
-            xmin = request_opts['bbox'].get('xmin', x0)
-            ymin = request_opts['bbox'].get('ymin', y0)
-            xmax = request_opts['bbox'].get('xmax', x1)
-            ymax = request_opts['bbox'].get('ymax', y1)
-
-            xmin = np.max([x0, xmin])
-            ymin = np.max([y0, ymin])
-            xmax = np.min([x1, xmax])
-            ymax = np.min([y1, ymax])
-
-            bbox = Bbox.from_extents(xmin, ymin, xmax, ymax)
-
-            if 'crs' in request_opts:
-                bbox_crs = CRS.from_user_input(request_opts['bbox_crs'])
-            else:
-                bbox_crs = CRS.from_user_input(profile['crs'])
-
-            if not bbox_crs.equals(CRS.from_user_input(profile['crs'])):
-                bbox = transform_bbox(bbox, bbox_crs, profile['crs'])
-
-            window = rasterio.windows.from_bounds(
-                    # x0, y0, x1, y1,
-                    bbox.xmin, bbox.ymin, bbox.xmax, bbox.ymax,
-                    transform=profile['transform'],
-                    # height=profile['height'],
-                    # width=profile['width'],
-                    )
-            row_off = int(np.ceil(window.row_off))
-            col_off = int(np.ceil(window.col_off))
-            width = int(np.ceil(window.width))
-            height = int(np.ceil(window.height))
-        else:
-            row_off = 0
-            col_off = 0
-            width = profile['width']
-            height = profile['height']
-
-        chunk_size = request_opts.get('chunk_size')
-        if chunk_size is not None:
-            resampling_factor = request_opts.get('resampling_factor')
-            if resampling_factor is not None:
-                chunk_size /= resampling_factor
-        clip = request_opts.get('clip')
-        if clip is not None:
-            # what type of clip?
-            if isinstance(clip, str):
-                # We assume strings to be loadable by geopandas.
-                # There is a function later that will determine whether or not
-                # it is geopandas loadable, and that should probably be done here
-                # instead.
-                request_opts.update({'clip': Path(clip)})
-            elif isinstance(clip, Path):
-                pass
-            elif isinstance(clip, dict):
-                if 'mesh' in clip:
-                    if cache_directory is None:
-                        # TODO: fix this shortcut
-                        cache_directory = Path('/tmp')
-                    outname = cache_directory / f'{get_digest(clip["mesh"])}.feather'
-                    if outname.exists():
-                        request_opts.update({'clip': outname})
-                    else:
-                        crs = clip.get('crs')
-                        if crs is not None:
-                            crs = CRS.from_user_input(crs)
-                        mesh = Mesh.open(clip['mesh'], crs=crs)
-                        clip_poly = mesh.hull.multipolygon()
-                        gpd.GeoDataFrame([{'geometry': clip_poly}], crs=crs).to_feather(outname)
-                        request_opts.update({'clip': outname})
-            else:
-                raise NotImplementedError(
-                        f'Unhandled clip argument for {raster_path} as {clip}.'
-                    )
-
-        for j, window in enumerate(get_iter_windows(
-                width,
-                height,
-                chunk_size=chunk_size,
-                overlap=request_opts.get('overlap', 0),
-                row_off=row_off,
-                col_off=col_off,
-                )):
-            yield (i, raster_path, request_opts), (j, window)
+        for j, window in iter_raster_windows(raster_path, request_opts):
+            yield (i, raster_path), (j, window)
 
 
 def get_digest(file_path):
@@ -481,38 +488,47 @@ def get_digest(file_path):
     return h.hexdigest()
 
 
-def get_raster_from_opts(raster_path, raster_opts, window=None):
+def get_raster_from_opts(
+        raster_path,
+        crs=None,
+        clip=None,
+        mask=None,
+        window=None,
+        chunk_size=None,
+        overlap=0,
+        resampling_factor=None,
+        resampling_method=None,
+        ):
+    from geomesh.cli.mpi.lib import RasterClipStrConfig
 
-    raster_opts = raster_opts or {}
-
-    crs = raster_opts.get('crs')
     if crs is not None:
         crs = CRS.from_user_input(crs)
     else:
         with rasterio.open(raster_path) as src:
             src_crs = src.crs
-
-    clip = raster_opts.get('clip')
-    if clip is not None:
-        clip = _load_geometry_file(clip)
+    if clip is None:
+        pass
+    elif isinstance(clip, RasterClipStrConfig):
+        clip = _load_geometry_file(clip.path)
         clip.to_crs(crs if crs is not None else src_crs, inplace=True)
         clip = clip.unary_union
+    else:
+        raise TypeError(f"Unreachable: Expected clip of type None or RasterClipStrConfig but got {type(clip)=}")
 
-    mask = raster_opts.get('mask')
     if mask is not None:
         if isinstance(mask, BaseGeometry):
             pass
         else:
-            mask = _load_geometry_file(mask)
+            mask = _load_geometry_file(mask['path'])
             mask.to_crs(crs if crs is not None else src_crs, inplace=True)
             mask = mask.unary_union
     return Raster(
         raster_path,
         crs=crs,
-        chunk_size=raster_opts.get('chunk_size'),
-        overlap=raster_opts.get('overlap'),
-        resampling_factor=raster_opts.get('resampling_factor'),
-        resampling_method=raster_opts.get('resampling_method'),
+        chunk_size=chunk_size,
+        overlap=overlap,
+        resampling_factor=resampling_factor,
+        resampling_method=resampling_method,
         # bbox=tmp_args.bbox,
         window=window,
         clip=clip,

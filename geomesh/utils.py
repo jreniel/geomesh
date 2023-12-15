@@ -113,39 +113,24 @@ def _check_if_is_interior_worker(polygon, _msh_t):
         return True
     return False
 
-# def filter_polygons(polygons):
-#     from geomesh.geom.base import multipolygon_to_jigsaw_msh_t
-#     polygons = [_ for _ in polygons]
-#     areas = [p.area for p in polygons]
-#     outer_polygon = polygons.pop(areas.index(max(areas)))
-#     if len(polygons) == 0:
-#         return outer_polygon, []
-#     if outer_polygon.is_empty:
-#         return outer_polygon, []
-#     if len(outer_polygon.interiors) == 0:
-#         return outer_polygon, []
-#     _msh_t = multipolygon_to_jigsaw_msh_t(MultiPolygon([Polygon(outer_polygon.exterior)]))
-#     test_points = np.vstack([np.array(polygon.exterior.coords)[0, :] for polygon in polygons])
-#     in_poly, on_edge = inpoly2(test_points, _msh_t.vert2['coord'], _msh_t.edge2['index'])
-#     remaining_polygons = np.array(polygons)[np.where(~in_poly)].tolist()
-#     return outer_polygon, remaining_polygons
+
+
 def filter_polygons(polygons, crs) -> typing.List[Polygon]:
     exteriors_gdf = gpd.GeoDataFrame(geometry=[Polygon(poly.exterior) for poly in polygons], crs=crs)
     joined = gpd.sjoin(exteriors_gdf, exteriors_gdf, how='left', predicate='within')
     joined = joined[joined.index != joined.index_right]
     filtered_polygons = exteriors_gdf.loc[~exteriors_gdf.index.isin(joined.index.unique())]
-    return [polygons[index] for index in filtered_polygons.index.unique()]
-
-    # gdf = gpd.GeoDataFrame(geometry=polygons, crs=crs)
-    # gdf['area'] = gdf.to_crs("epsg:6933").area
-    # gdf = gdf.sort_values('area', ascending=False)
-    # outer_polygon = gdf.iloc[0].geometry
-    # outer_polygons = [outer_polygon]
-    # gdf = gdf.iloc[1:]
-    # for polygon in gdf.geometry:
-    #     if not Polygon(outer_polygon.exterior).contains(polygon):
-    #         outer_polygons.append(polygon)
-    # return outer_polygons
+    within_indices = filtered_polygons.index.unique()
+    new_polygons = [polygons[index] for index in filtered_polygons.index.unique()]
+    within_counts = joined.index.value_counts()
+    multiple_within = within_counts[within_counts > 1].index.tolist()
+    if len(multiple_within) == 0:
+        return new_polygons
+    else:
+        nested_polygons = [polygons[i] for i in multiple_within]
+        processed_nested_polygons = filter_polygons(nested_polygons, crs)
+        new_polygons.extend(processed_nested_polygons)
+        return new_polygons
 
 def cleanup_pinched_nodes(mesh, e0_unique, e0_count, e1_unique, e1_count):
     mesh.tria3 = mesh.tria3.take(
@@ -611,18 +596,9 @@ def split_bad_quality_quads(
         # Define a function to calculate the angle between three points
 
         def angle(a, b, c):
-            ba = a - b
-            bc = c - b
-            dot_p = np.dot(ba, bc)
-            mag_prod = np.linalg.norm(ba) * np.linalg.norm(bc)
-            if mag_prod == 0:
-                return 0
-            else:
-                # Clip the value to avoid RuntimeWarning in arccos
-                clipped_value = np.clip(dot_p / mag_prod, -1.0, 1.0)
-                angle = np.arccos(clipped_value)
-                return np.degrees(angle)
-
+            v1 = a - b
+            v2 = c - b
+            return angle_between(v1, v2)
         # Calculate the angles of the triangle
         angles = [
             angle(coords[0], coords[1], coords[2]),

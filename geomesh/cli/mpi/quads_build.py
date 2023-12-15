@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import os
+from typing import List
 import sys
 
 from colored_traceback.colored_traceback import Colorizer
@@ -13,7 +14,9 @@ from mpi4py import MPI
 from mpi4py.futures import MPICommExecutor, MPIPoolExecutor
 from pyproj import CRS
 import geopandas as gpd
+from pydantic import BaseModel
 import matplotlib.pyplot as plt
+import yaml
 import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon, LinearRing
@@ -111,17 +114,17 @@ def get_argument_parser():
     return parser
 
 
-def get_quads_config_from_args(comm, args):
-    rank = comm.Get_rank()
-    if rank == 0:
-        logger.info('Validating user raster quad requests...')
-        quads_config = BuildCli(args).config.quads.quads_config
-        if quads_config is None:
-            raise RuntimeError(f'No quads to process in {args.config}')
-    else:
-        quads_config = None
+# def get_quads_config_from_args(comm, args):
+#     rank = comm.Get_rank()
+#     if rank == 0:
+#         logger.info('Validating user raster quad requests...')
+#         quads_config = BuildCli(args).config.quads.quads_config
+#         if quads_config is None:
+#             raise RuntimeError(f'No quads to process in {args.config}')
+#     else:
+#         quads_config = None
 
-    return comm.bcast(quads_config, root=0)
+#     return comm.bcast(quads_config, root=0)
 
 
 def get_quads_raster_window_requests(comm, quads_config):
@@ -519,12 +522,32 @@ def get_indices_to_drop(quads_gdf):
         del overlap_dict[max_area_idx]
     return indices_to_drop
 
+class QuadsRasterConfig(lib.RasterConfig, lib.IterableRasterWindowTrait):
+    pass
+
+
+
+
+class QuadsConfig(BaseModel):
+    rasters: List[QuadsRasterConfig]
+
+    @classmethod
+    def try_from_yaml_path(cls, path: Path) -> "QuadsRasterConfig":
+        with open(path, 'r') as file:
+            data = yaml.safe_load(file)
+        return cls.try_from_dict(data)
+
+    @classmethod
+    def try_from_dict(cls, data: dict) -> "QuadsRasterConfig":
+        return cls(**data['hfun'])
+
 
 def entrypoint(args, comm=None):
     comm = MPI.COMM_WORLD if comm is None else comm
-    quads_config = get_quads_config_from_args(comm, args)
     cache_directory = args.cache_directory or Path(os.getenv('GEOMESH_TEMPDIR', os.getcwd() + '/.tmp-geomesh'))
     cache_directory.mkdir(exist_ok=True, parents=True)
+    quads_config = QuadsConfig.try_from_yaml_path(args.config)
+
     uncombined_quads_paths = get_uncombined_quads(comm, quads_config, cache_directory=cache_directory)
     combined_quads_gdf = get_combined_quads_gdf(comm, uncombined_quads_paths)
     if comm.Get_rank() == 0:

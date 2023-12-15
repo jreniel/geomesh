@@ -137,7 +137,7 @@ async def launch_task(
     }
 
     async with semaphore:
-        logger.debug(f'Running command:\n{cmd}')
+        logger.info(f'Running command:\n{cmd}')
         with pexpect.spawn(
                 cmd,
                 **spawn_kwargs

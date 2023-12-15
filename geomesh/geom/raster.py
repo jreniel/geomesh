@@ -343,7 +343,7 @@ class RasterGeom(BaseGeom):
 
         if len(windows) > 1:
             if unary_union:
-                logger.info('Calling geopandas unary_union for serial mp generation.')
+                # logger.info('Calling geopandas unary_union for serial mp generation.')
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
                             "ignore",

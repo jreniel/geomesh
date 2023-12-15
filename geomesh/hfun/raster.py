@@ -70,21 +70,25 @@ class RasterHfun(BaseHfun, Raster):
         self.init = init
 
     def __iter__(self):
-        for window in self.iter_windows():
-            x, y, zvals = get_window_data(
-                    self.src,
-                    window,
-                    band=None,
-                    masked=True,
-                    resampling_method=self.resampling_method,
-                    resampling_factor=self.resampling_factor,
-                    clip=self.clip,
-                    )
-            irange, jrange = rasterio.windows.toranges(window)
-            self._fp.flush()
+        iter_windows = list(self.iter_windows())
+        for i, (xvals, yvals, zvals) in enumerate(self.raster):
+            window = iter_windows[i]
+            irange, jrange = rasterio.windows.toranges(iter_windows[i])
             zvals = self._fp[int(irange[0]):int(irange[1]), int(jrange[0]):int(jrange[1])]
-            self._fp.flush()
-            yield x, y, zvals
+        #     x, y, zvals = get_window_data(
+        #             self.src,
+        #             window,
+        #             band=None,
+        #             masked=True,
+        #             resampling_method=self.resampling_method,
+        #             resampling_factor=self.resampling_factor,
+        #             clip=self.clip,
+        #             )
+            # irange, jrange = rasterio.windows.toranges(window)
+            # self._fp.flush()
+            # zvals = self._fp[int(irange[0]):int(irange[1]), int(jrange[0]):int(jrange[1])]
+            # self._fp.flush()
+            yield xvals, yvals, zvals
 
     @lru_cache
     def msh_t(
@@ -230,7 +234,6 @@ class RasterHfun(BaseHfun, Raster):
                 # geom = PolygonGeom(box(x0, y0, x1, y1), self.crs).msh_t()
 
             logger.debug("Configuring jigsaw...")
-            print('configuring jigsaw')
             opts = copy(opts_kwargs.get("opts", None)) or jigsaw_jig_t()
             opts.mesh_dims = getattr(opts, 'mesh_dims', None) or opts_kwargs.get('mesh_dims', 2)
             opts.numthread = getattr(opts, 'numthread', None) or opts_kwargs.get('numthread', nprocs)
@@ -415,7 +418,13 @@ class RasterHfun(BaseHfun, Raster):
 
         local_azimuthal_projection = None
         iter_windows = list(self.iter_windows())
-        for i, (xvals, yvals, zvals) in enumerate(self):
+        tot = len(iter_windows)
+
+        # for i, window in enumerate(iter_windows):
+        for i, (xvals, yvals, zvals) in enumerate(self.raster):
+            window = iter_windows[i]
+            irange, jrange = rasterio.windows.toranges(iter_windows[i])
+            zvals = self._fp[int(irange[0]):int(irange[1]), int(jrange[0]):int(jrange[1])]
             # logger.debug(f'iter: {i}, window={window}')
             # print(f'iter: {i}, window={window}')
             # logger.info(f"Processing window {i+1}/{len(iter_windows)}.")
@@ -864,6 +873,7 @@ class RasterHfun(BaseHfun, Raster):
                 self._fp[int(irange[0]):int(irange[1]), int(jrange[0]):int(jrange[1])],
                 hfun_values,
             )
+            # irange, jrange = rasterio.windows.toranges(iter_windows[i])
             self._fp[int(irange[0]):int(irange[1]), int(jrange[0]):int(jrange[1])] = hfun_values
             self._fp.flush()
             # dst.write_band(1, hfun_values, window=window)
@@ -1008,23 +1018,19 @@ class RasterHfun(BaseHfun, Raster):
         #     cbar.set_label(cbar_label)
         return axes
 
-    @figure
     def tricontourf(
         self,
         marche: bool = False,
         verbosity=None,
-        axes=None,
-        show=False,
-        figsize=None,
-        extend="both",
+        ax=None,
         elements=True,
-        cmap="jet",
         color="k",
         linewidth=0.07,
         **kwargs,
     ) -> matplotlib.axes.Axes:
+        ax = ax or plt.gca()
         msh_t = self.msh_t(marche=marche, verbosity=verbosity)
-        axes.tricontourf(
+        ax.tricontourf(
             msh_t.vert2["coord"][:, 0],
             msh_t.vert2["coord"][:, 1],
             msh_t.tria3["index"],
@@ -1032,16 +1038,15 @@ class RasterHfun(BaseHfun, Raster):
             **kwargs,
         )
         if elements is True:
-            axes.triplot(
+            ax.triplot(
                 msh_t.vert2["coord"][:, 0],
                 msh_t.vert2["coord"][:, 1],
                 msh_t.tria3["index"],
                 color=color,
                 linewidth=linewidth,
             )
-        return axes
+        return ax
 
-    @figure
     def triplot(
         self,
         window: rasterio.windows.Window = None,
@@ -1536,6 +1541,26 @@ def test_aa_on_heavy_raster():
     plt.gca().axis('scaled')
     plt.show(block=True)
 
+
+def test_raster_window_read():
+    import matplotlib.pyplot as plt
+    from rasterio.windows import Window
+    raster_path="/sciclone/pscr/jrcalzada/thesis/.git/modules/runs/tropicald-validations/modules/data/prusvi_19_topobathy_2019/annex/objects/36/xM/MD5E-s165602212--c49959a2e85389cdeba86045b080a6e4.tif/MD5E-s165602212--c49959a2e85389cdeba86045b080a6e4.tif"
+    window = Window(col_off=4447, row_off=0, width=3665, height=7297)
+    # window=None
+    raster = Raster(raster_path, window=window, resampling_factor=0.2)
+    # ax1 = raster.make_plot()
+    # plt.show(block=False)
+    hfun = RasterHfun(raster)
+    hfun.verbosity = 1
+    hfun.add_contour(0., expansion_rate=0.007, target_size=100.)
+    hfun.add_contour(10., expansion_rate=0.007, target_size=100.)
+    # hfun.add_gradient_delimiter(hmin=30., hmax=500.)
+    ax2 = hfun.tricontourf(elements=True)
+    # hfun.triplot(ax=ax2)
+    # ax2 = hfun.contourf()
+    ax2.axis("scaled")
+    plt.show(block=True)
 
 if __name__ == "__main__":
     test_aa_on_heavy_raster()

@@ -658,6 +658,7 @@ def entrypoint():
         args = get_argument_parser().parse_args()
     else:
         args = None
+    print("bcast args", flush=True)
     args = comm.bcast(args, root=0)
     init_logger(args.log_level)
     main(args)
