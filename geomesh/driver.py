@@ -32,9 +32,9 @@ class JigsawDriver:
 
     def __init__(
             self,
-            geom: Union[BaseGeom, jigsaw_msh_t] = None,
-            hfun: Union[BaseHfun, jigsaw_msh_t] = None,
-            initial_mesh: Union[BaseMesh, jigsaw_msh_t] = None,
+            geom: Union[BaseGeom, jigsaw_msh_t, None] = None,
+            hfun: Union[BaseHfun, jigsaw_msh_t, None] = None,
+            initial_mesh: Union[BaseMesh, jigsaw_msh_t, None] = None,
             verbosity: int = 0,
             dst_crs=None,
             sieve=None,
@@ -381,7 +381,7 @@ def test_meshgen_for_Harlem_River():
     # # the_mesh.make_plot(ax=plt.gca(), elements=True)
     # # plt.show(block=True)
     # # pickle.dump(the_mesh, open("the_quad_mesh.pkl", "wb"))
-    
+
     # # raise NotImplementedError("Ready for auto_bndgen")
     # # exit()
     # # import pickle

@@ -1,43 +1,33 @@
-from datetime import datetime
-from datetime import timedelta
-from pathlib import Path
-from time import time
-from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Union
 import hashlib
 import inspect
 import json
 import logging
 import tempfile
 import warnings
+from datetime import datetime, timedelta
+from pathlib import Path
+from time import time
+from typing import Any, Dict, List, Optional, Union
 
-from colored_traceback.colored_traceback import Colorizer
-from dask_geopandas.hilbert_distance import _hilbert_distance
-from mpi4py import MPI
-from mpi4py.futures import MPICommExecutor
-from psutil import cpu_count
-from pydantic import BaseModel
-from pydantic import model_validator
-from pyproj import CRS
-from scipy.optimize import curve_fit
-from shapely import LineString
-from shapely import MultiPolygon
-from shapely import Polygon
-from shapely import ops
 import dask_geopandas as dgpd
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+from colored_traceback.colored_traceback import Colorizer
+from dask_geopandas.hilbert_distance import _hilbert_distance
+from mpi4py import MPI
+from mpi4py.futures import MPICommExecutor
+from psutil import cpu_count
+from pydantic import BaseModel, model_validator
+from pyproj import CRS
+from scipy.optimize import curve_fit
+from shapely import LineString, MultiPolygon, Polygon, ops
 
-from geomesh.cli.raster_opts import expand_raster_request_path
-from geomesh.cli.raster_opts import expand_tile_index
-from geomesh.cli.raster_opts import get_raster_from_opts
-from geomesh.cli.raster_opts import iter_raster_windows
+from geomesh.cli.raster_opts import (expand_raster_request_path,
+                                     expand_tile_index, get_raster_from_opts,
+                                     iter_raster_windows)
 from geomesh.geom.raster import RasterGeom
 
 logger = logging.getLogger(__name__)
@@ -257,8 +247,79 @@ class BboxConfig(BaseModel):
 
 from pydantic.class_validators import validator
 
-
 # RasterClipConfigTypes = Union[dict, str]
+
+
+
+
+class OptsConfig(BaseModel):
+    # verbosity: Optional[int] = None
+    numthread: Optional[int] = None
+    ## jcfg_file = None
+    ## tria_file = None
+    ## bnds_file = None
+##------------------------------------------ INIT options
+    #init_file = None
+    #init_tags = None
+    #init_near = None
+##------------------------------------------ GEOM options
+    #geom_file = None
+    #geom_tags = None
+
+    #geom_seed = None
+
+    #geom_feat = None
+
+    #geom_phi1 = None
+    #geom_phi2 = None
+
+    #geom_eta1 = None
+    #geom_eta2 = None
+    ## HFUN options
+    #hfun_file = None
+    #hfun_tags = None
+    #hfun_scal = None
+    #hfun_hmax = None
+    #hfun_hmin = None
+    ## MESH options
+    #mesh_file = None
+    #mesh_tags = None
+    #mesh_kern = None
+    #bnds_kern = None
+    #mesh_iter = None
+    #mesh_dims = None
+    #mesh_top1 = None
+    #mesh_top2 = None
+    #mesh_siz1 = None
+    #mesh_siz2 = None
+    #mesh_siz3 = None
+    #mesh_eps1 = None
+    #mesh_eps2 = None
+    #mesh_rad2 = None
+    #mesh_rad3 = None
+    #mesh_off2 = None
+    #mesh_off3 = None
+    #mesh_snk2 = None
+    #mesh_snk3 = None
+    #mesh_vol3 = None
+    ## OPTM options
+    #optm_kern = None
+    #optm_iter = None
+    #optm_cost = None
+    #optm_beta = None
+    #optm_zeta = None
+    #optm_qtol = None
+    #optm_qlim = None
+    #optm_zip_ = None
+    #optm_div_ = None
+    #optm_tria = None
+    #optm_dual = None
+    # @model_validator(mode='after')
+    # def postcheck(self) -> "Self":
+    #     if self.bbox is not None:
+
+    #     pass
+
 
 class RasterClipStrConfig(BaseModel):
     path: Path

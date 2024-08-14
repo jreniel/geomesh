@@ -6,12 +6,10 @@ from typing import List, Tuple, Union
 from jigsawpy import jigsaw_msh_t
 import numpy as np
 from pyproj import CRS  # , Transformer
-# from shapely import ops
+import matplotlib.pyplot as plt
 from shapely.geometry import MultiPolygon
-# import utm
 
 from geomesh import utils
-from geomesh.figures import figure
 
 
 logger = logging.getLogger(__name__)
@@ -37,13 +35,13 @@ class BaseGeom(ABC):
     def __init__(self, crs):
         self._crs = crs
 
-    @figure
-    def make_plot(self, axes=None, **kwargs):
+    def make_plot(self, ax=None, **kwargs):
+        ax = ax or plt.gca()
         for polygon in self.multipolygon.geoms:
-            axes.plot(*polygon.exterior.xy, color="k")
+            ax.plot(*polygon.exterior.xy, color="k")
             for interior in polygon.interiors:
-                axes.plot(*interior.xy, color="r")
-        return axes
+                ax.plot(*interior.xy, color="r")
+        return ax
 
     @property
     def multipolygon(self) -> MultiPolygon:

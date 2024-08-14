@@ -101,7 +101,7 @@ class Boundaries:
         threshold=0.,
         land_ibtype=0,
         interior_ibtype=1,
-        min_open_bound_length=4,
+        min_open_bound_length=0,
     ):
         self.open = None
         self.land = None
@@ -138,32 +138,18 @@ class Boundaries:
             if isinstance(ocean_linestrings, LineString):
                 ocean_linestrings = MultiLineString([ocean_linestrings])
 
-            def add_linestring_to_ocean_boundaries(linestring, tree, hgrid, ocean_boundaries):
-                coords = np.array(linestring.coords)
-                _, ii = tree.query(coords)
-                index_id = list(map(hgrid.nodes.get_id_by_index, ii))
+            def add_linestring_to_ocean_boundaries(linestring, ocean_boundaries):
+                _, ii = tree.query(linestring.coords)
+                index_id = list(map(self.hgrid.nodes.get_id_by_index, ii))
                 ocean_boundaries.append({
                     "index_id": index_id,
                     "indexes": ii,
                     "geometry": linestring,
                     "btype": 'ocean',
                 })
-            for ocean_linestring in ocean_linestrings.geoms:
-                coords = np.array(ocean_linestring.coords)
 
-                if coords[0].tolist() == coords[-1].tolist():  # Check for cyclic linestring
-                    midpoint_index = len(coords) // 2
-                    first_half = LineString(coords[:midpoint_index + 1])
-                    second_half = LineString(coords[midpoint_index:])
-                    add_linestring_to_ocean_boundaries(first_half, tree, self.hgrid, ocean_boundaries)
-                    add_linestring_to_ocean_boundaries(second_half, tree, self.hgrid, ocean_boundaries)
-                else:
-                    add_linestring_to_ocean_boundaries(ocean_linestring, tree, self.hgrid, ocean_boundaries)
-            land_linestrings = linemerge(land_edges)
-            if isinstance(land_linestrings, LineString):
-                land_linestrings = MultiLineString([land_linestrings])
-            for land_linestring in land_linestrings.geoms:
-                _, ii = tree.query(land_linestring.coords)
+            def add_linestring_to_land_boundaries(linestring, land_boundaries):
+                _, ii = tree.query(linestring.coords)
                 index_id = list(map(self.hgrid.nodes.get_id_by_index, ii))
                 land_boundaries.append(
                             {
@@ -171,14 +157,32 @@ class Boundaries:
                                 "ibtype": land_ibtype,
                                 "index_id": index_id,
                                 "indexes": ii,
-                                "geometry": land_linestring,
+                                "geometry": linestring,
                                 "btype": 'land',
                             }
                         )
+
+            for ocean_linestring in ocean_linestrings.geoms:
+                coords = np.array(ocean_linestring.coords)
+                if len(coords) <= min_open_bound_length:
+                    add_linestring_to_land_boundaries(ocean_linestring, land_boundaries)
+                elif coords[0].tolist() == coords[-1].tolist():  # Check for cyclic linestring
+                    midpoint_index = len(coords) // 2
+                    first_half = LineString(coords[:midpoint_index + 1])
+                    second_half = LineString(coords[midpoint_index:])
+                    add_linestring_to_ocean_boundaries(first_half, ocean_boundaries)
+                    add_linestring_to_ocean_boundaries(second_half, ocean_boundaries)
+                else:
+                    add_linestring_to_ocean_boundaries(ocean_linestring, ocean_boundaries)
+            land_linestrings = linemerge(land_edges)
+            if isinstance(land_linestrings, LineString):
+                land_linestrings = MultiLineString([land_linestrings])
+            for land_linestring in land_linestrings.geoms:
+                add_linestring_to_land_boundaries(land_linestring, land_boundaries)
                 # cnt += 1
 
             for interior in rings['interiors']:
-                indexes, _1 = [list(t) for t in zip(*interior)]
+                indexes, _ = [list(t) for t in zip(*interior)]
                 index_id = list(map(self.hgrid.nodes.get_id_by_index, indexes))
                 coords = self.hgrid.coord[indexes]
                 interior_boundaries.append(
@@ -195,7 +199,10 @@ class Boundaries:
 
         # to overcome out-of-memory array allocation bug in fortran side
         if len(interior_boundaries) > 0:
-            land_boundaries = self._optimize_fortran_boundary_allocation_array(land_boundaries, interior_boundaries)
+            land_boundaries = self._optimize_fortran_boundary_allocation_array(
+                    land_boundaries,
+                    interior_boundaries
+                    )
         self.open = gpd.GeoDataFrame(
             ocean_boundaries, crs=self.hgrid.crs if len(ocean_boundaries) > 0 else None
         )
@@ -211,10 +218,10 @@ class Boundaries:
             ocn_bnd[str(i+1)] = {'indexes': bnd['index_id']}
         lnd_bnd = {}
         for i, bnd in enumerate(land_boundaries):
-            lnd_bnd.update({str(i+1): {'indexes': land_boundaries[i]['index_id']}})
+            lnd_bnd.update({str(i+1): {'indexes': bnd['index_id']}})
         int_bnd = {}
         for i, bnd in enumerate(interior_boundaries):
-            int_bnd.update({str(i+1): {'indexes': interior_boundaries[i]['index_id']}})
+            int_bnd.update({str(i+1): {'indexes': bnd['index_id']}})
         self.data = {
             None: ocn_bnd,
             land_ibtype: lnd_bnd,

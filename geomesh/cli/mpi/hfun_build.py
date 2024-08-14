@@ -1,11 +1,4 @@
 #!/usr/bin/env python
-from functools import lru_cache
-from functools import partial
-from pathlib import Path
-from time import time
-from typing import Any
-from typing import List
-from typing import Optional
 import argparse
 import hashlib
 import json
@@ -16,37 +9,31 @@ import queue
 import sys
 import tempfile
 import warnings
+from functools import partial
+from pathlib import Path
+from time import time
+from typing import Any, List, Optional, Union
 
-from colored_traceback.colored_traceback import Colorizer
-from jigsawpy import jigsaw_msh_t, savemsh, loadmsh
-from matplotlib.transforms import Bbox
-from mpi4py import MPI
-from mpi4py.futures import MPICommExecutor
-# from mpi4py.futures import MPIPoolExecutor
-from pydantic import BaseModel
-from pydantic import model_validator
-from pyproj import CRS, Transformer
-from shapely import ops
-from shapely.geometry import LineString
-from shapely.geometry import MultiLineString
-from shapely.geometry import MultiPolygon
 import geopandas as gpd
-import fasteners
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+from contourpy import contour_generator
+from jigsawpy import jigsaw_msh_t
+from matplotlib.transforms import Bbox
+from mpi4py import MPI
+from mpi4py.futures import MPICommExecutor
+from pydantic import BaseModel, model_validator
+from pyproj import CRS, Transformer
+from shapely import GeometryType, from_ragged_array, ops
+from shapely.geometry import LineString, MultiLineString, MultiPolygon
 
-from geomesh import Geom, Hfun
-from geomesh import utils
-from geomesh.cli.build import BuildCli
+from geomesh import Hfun, utils
 from geomesh.cli.mpi import lib
-from geomesh.cli.mpi.geom_build import GeomConfig
+from geomesh.cli.mpi.geom_build import GeomConfig, GeomRasterConfig
+from geomesh.cli.raster_opts import get_raster_from_opts
 from geomesh.geom.shapely_geom import ShapelyGeom
-from geomesh.cli.mpi.geom_build import GeomRasterConfig
-from geomesh.cli.raster_opts import iter_raster_window_requests, get_raster_from_opts
-from geomesh.cli.schedulers.local import LocalCluster
-from geomesh.geom.shapely_geom import MultiPolygonGeom
 from geomesh.hfun.raster import RasterHfun
 
 warnings.filterwarnings('ignore', message='.*initial implementation of Parquet.*')
@@ -56,7 +43,7 @@ logger = logging.getLogger(f'[rank: {MPI.COMM_WORLD.Get_rank()}]: {__name__}')
 
 
 class HfunRasterContourRequest(BaseModel):
-    level: float | List[float]
+    level: Union[float, List[float]]
     expansion_rate: float
     target_size: Optional[float] = None
     # nprocs: Optional[int] = None
@@ -79,11 +66,28 @@ class HfunGeomConfig(BaseModel):
     zmin: Optional[float] = None
     zmax: Optional[float] = None
 
+class HfunRasterNarrowChannelAntiAliasingRequest(BaseModel):
+    threshold_size: Optional[float] = None
+    resample_distance: Optional[float] = None
+    simplify_tolerance: Optional[float] = None
+    interpolation_distance: Optional[float] = None
+    cross_section_node_count: Optional[int] = 4
+    min_ratio: Optional[float] = 0.1
+    min_area: Optional[float] = np.finfo(np.float64).min
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+    zmin: Optional[float] = None
+    zmax: Optional[float] = None
+    hmin: Optional[float] = None
+    hmax: Optional[float] = None
+    nprocs: Optional[float] = None
+    exclude_gdf: Optional[Path] = None
 
 class HfunRequestConfig(BaseModel):
     contour: Optional[HfunRasterContourRequest | List[HfunRasterContourRequest]] = None
     gradient_delimiter: Optional[HfunRasterGradientDelimiterRequest | List[HfunRasterGradientDelimiterRequest]] = None
     constant_value: Optional[HfunRasterConstantValueRequest | List[HfunRasterConstantValueRequest]] = None
+    narrow_channel_anti_aliasing: Optional[HfunRasterNarrowChannelAntiAliasingRequest | List[HfunRasterNarrowChannelAntiAliasingRequest]] = None
     geom: Optional[HfunGeomConfig] = None
 
 
@@ -125,6 +129,7 @@ class HfunConfig(BaseModel):
             'contour',
             'gradient_delimiter',
             'constant_value',
+            'narrow_channel_anti_aliasing',
             ]
 
     _normalization_keys = [ "geom", "hmax", "hmin", "marche", ]
@@ -132,7 +137,7 @@ class HfunConfig(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def precheck(cls, data: Any) -> Any:
+    def _precheck(cls, data: Any) -> Any:
         cpus_per_task = data.get('cpus_per_task')
         max_cpus_per_task = data.get('max_cpus_per_task')
         min_cpus_per_task = data.get('min_cpus_per_task')
@@ -202,6 +207,33 @@ class HfunConfig(BaseModel):
                 k += 1
 
 
+    def _prebuild_raster_geom_gdf(self, comm, cache_directory=None):
+        data = {
+                "rasters": [],
+                # "sieve": False,
+                # "partition_size": 2,
+                # "grid_size": None,
+                }
+        for raster_config in self.rasters:
+            raster_geom_data = dict(
+                    path=raster_config.path,
+                    tile_index=raster_config.tile_index,
+                    resampling_factor=raster_config.resampling_factor,
+                    clip=raster_config.clip,
+                    overlap=raster_config.overlap,
+                    chunk_size=raster_config.chunk_size,
+                    bbox=raster_config.bbox,
+                    crs=raster_config.crs,
+                    )
+            if raster_config.geom is not None:
+                raster_geom_data['zmin'] = raster_config.geom.zmin
+                raster_geom_data['zmax'] = raster_config.geom.zmax
+            data["rasters"].append(GeomRasterConfig(**raster_geom_data))
+        geom_config = GeomConfig(**data)
+        geom_cache_directory = cache_directory.parent / "geom_build" if cache_directory is not None else None
+        base_geoms_gdf = geom_config.build_raster_geom_gdf_mpi(comm, output_rank=0, cache_directory=geom_cache_directory)
+
+
     def _build_base_geoms_gdf(self, comm, output_rank=None, cache_directory=None):
         output_rank = 0 if output_rank is None else output_rank
         data = {
@@ -215,7 +247,7 @@ class HfunConfig(BaseModel):
                     path=raster_config.path,
                     tile_index=raster_config.tile_index,
                     resampling_factor=raster_config.resampling_factor,
-                    clip=raster_config.clip,
+                    clip=str(raster_config.clip.path.resolve()) if raster_config.clip is not None else None,
                     overlap=raster_config.overlap,
                     chunk_size=raster_config.chunk_size,
                     bbox=raster_config.bbox,
@@ -258,30 +290,15 @@ class HfunConfig(BaseModel):
     def _build_contours_gdf_from_raster(raster_path, raster_request_opts, contour_request_config):
         # g, (k, ((i, raster_path, raster_request_opts, hfun_request_opts), (j, window))) = indices
         def extract_contours_from_arrays(xvals, yvals, zvals, level):
-            # plt.ioff()
             logger.debug(f"Processing contour {level=} for {raster_path=}")
-            import matplotlib as mpl
-            _old_backend = mpl.get_backend()
-            plt.switch_backend('agg')
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=UserWarning)
-                ax = plt.contour(xvals, yvals, zvals, levels=[level])
-            plt.close(plt.gcf())
-            plt.switch_backend(_old_backend)
-            for i, (_level, path_collection) in enumerate(zip(ax.levels, ax.collections)):
-                if _level != level:
-                    continue
-                linestrings = []
-                for path in path_collection.get_paths():
-                    try:
-                        linestrings.append(LineString(path.vertices))
-                    except ValueError as e:
-                        if "LineStrings must have at least 2 coordinate tuples" in str(e):
-                            continue
-                        raise e
-            return MultiLineString(linestrings)
+            # https://contourpy.readthedocs.io/en/latest/user_guide/external/shapely.html
+            lines = contour_generator(x=xvals, y=yvals, z=zvals, line_type="ChunkCombinedOffset").lines(level)
+            points, offsets = lines[0][0], lines[1][0]
+            if points is None:
+                return MultiLineString()
+            mls = from_ragged_array(GeometryType.MULTILINESTRING, points, (offsets, [0, len(offsets)-1]))
+            return mls[0]
         # lock = fasteners.InterProcessLock(cache_directory / f"{raster_path.name}.lock")  # for processes
-        data = []
         this_raster_window_data = []
         contour_request = contour_request_config.model_dump()
         request_levels = [contour_request.pop('level')] if not isinstance(contour_request['level'], list) else contour_request.pop('level')
@@ -471,8 +488,16 @@ class HfunConfig(BaseModel):
                     # del _coll
 
                     # hfun_contours_gdf = pd.concat([future.result() for future in hfun_contours_gdf], ignore_index=True)
-                    hfun_contours_gdf = pd.concat(list(executor.starmap(self._get_contours_gdf_from_raster, hfun_contours_gdf, chunksize=2)), ignore_index=True)
-                    raster_window_bbox = pd.concat(list(executor.starmap(self._get_raster_window_bbox, raster_window_bbox)), ignore_index=True)
+                    # for req in hfun_contours_gdf:
+                    #     self._get_contours_gdf_from_raster(*req)
+                    hfun_contours_gdf = pd.concat(
+                            list(executor.starmap(self._get_contours_gdf_from_raster, hfun_contours_gdf, chunksize=2)),
+                            ignore_index=True
+                            )
+                    raster_window_bbox = pd.concat(
+                            list(executor.starmap(self._get_raster_window_bbox, raster_window_bbox)),
+                            ignore_index=True
+                            )
                     raster_window_bbox = raster_window_bbox.loc[hfun_contours_gdf.global_index]
                     joined = gpd.sjoin(
                             hfun_contours_gdf,
@@ -480,7 +505,7 @@ class HfunConfig(BaseModel):
                             how='left',
                             predicate='intersects',
                             )
-                    joined = joined[joined.index != joined.index_right]
+                    # joined = joined[joined.index != joined.index_right]
                     joined.index.name = 'index_left'
                     groups = joined.groupby("index_left")
                     logger.debug("making differences")
@@ -511,8 +536,7 @@ class HfunConfig(BaseModel):
         # raise
         if output_rank is None:
             return comm.bcast(hfun_contours_gdf, root=root_rank), comm.bcast(raster_window_bbox, root=root_rank)
-        else:
-            return hfun_contours_gdf, raster_window_bbox
+        return hfun_contours_gdf, raster_window_bbox
 
     @staticmethod
     def _process_geom_difference(base_contours, envelope_geometries):
@@ -521,7 +545,7 @@ class HfunConfig(BaseModel):
             base_contours = base_contours.difference(combined_geom.buffer(-np.finfo(np.float16).eps) or MultiPolygon([]))
         base_contours = ops.unary_union(base_contours)
         return base_contours
-    
+
     @staticmethod
     def _loadmsh_wrapper(filepath: Path) -> jigsaw_msh_t:
         # msh_t = jigsaw_msh_t()
@@ -572,7 +596,7 @@ class HfunConfig(BaseModel):
                     crs=hfun_raster_window_geoms_gdf.crs
                 )
                 hfun_constraints = hfun_request_opts.pop("constraints")
-                if hfun_raster_window_contours_gdf is not None:
+                if hfun_raster_window_contours_gdf is not None and k in joined.index:
                     local_contours_gdf = hfun_raster_window_contours_gdf[hfun_raster_window_contours_gdf['global_index'].isin(list(joined.loc[[k]].index_right))]
                     hfun_constraints["contour"] = local_contours_gdf
                     hfun_request_opts["nprocs"] = self._compute_hfun_nprocs(max_threads, local_contours_gdf)
@@ -589,16 +613,19 @@ class HfunConfig(BaseModel):
                 #     uncombined_hfuns.append(self._build_raster_hfun_msh_t(*args))
                 # parallel
                 logger.debug("Begin building hfuns in parallel")
+                import random
                 start = time()
+                args = list(iter_raster_hfun_msh_t_args())
+                random.shuffle(args)
                 uncombined_hfuns: List[Path] = list(executor.starmap(
                     self._build_raster_hfun_msh_t,
-                    iter_raster_hfun_msh_t_args(),
+                    args,
                     ))
                 logger.debug(f"done building uncombined hfuns in parallel, took {time()-start}")
-                logger.debug("Begin loading hfuns in parallel")
-                start = time()
-                uncombined_hfuns: List[jigsaw_msh_t] = list(executor.map(self._loadmsh_wrapper, uncombined_hfuns))
-                logger.debug(f"done building uncombined hfuns in parallel, took {time()-start}")
+                # logger.debug("Begin loading hfuns in parallel")
+                # start = time()
+                # uncombined_hfuns: List[jigsaw_msh_t] = list(executor.map(self._loadmsh_wrapper, uncombined_hfuns))
+                # logger.debug(f"done building uncombined hfuns in parallel, took {time()-start}")
                 # import pickle
                 # pickle.dump(
                 #         uncombined_hfuns,
@@ -685,7 +712,7 @@ class HfunConfig(BaseModel):
     def _get_cached_hfun_filename(raster_request_opts, hfun_request_opts, hfun_constraints, cache_directory):
         normalized_requests = [raster_request_opts, hfun_request_opts, hfun_constraints]  # global requets
         serialized_requests = json.dumps(normalized_requests, default=str)
-        return cache_directory / (hashlib.sha256(serialized_requests.encode('utf-8')).hexdigest() + ".msh")
+        return cache_directory / (hashlib.sha256(serialized_requests.encode('utf-8')).hexdigest() + ".pkl")
 
     @classmethod
     def _build_raster_hfun_msh_t(
@@ -703,7 +730,8 @@ class HfunConfig(BaseModel):
                 )
         if raster_hfun_filename.is_file():
             logger.debug(f"Hfun for raster_path={raster_request_opts['raster_path']} window={raster_request_opts['window']} is already cached at {raster_hfun_filename}")
-            return raster_hfun_filename
+            with open(raster_hfun_filename, "rb") as fh:
+                return pickle.load(fh)
         logger.debug(f"Begin building hfun for raster_path={raster_request_opts['raster_path']} window={raster_request_opts['window']}")
         start = time()
         hfun = RasterHfun(
@@ -734,9 +762,10 @@ class HfunConfig(BaseModel):
         msh_t = hfun.msh_t()
         logger.debug(f"Building hfun for raster_path={raster_request_opts['raster_path']} window={raster_request_opts['window']} took {time()-start}")
         # savemsh(str(raster_hfun_filename.resolve()), msh_t)
-        pickle.dump(msh_t, open(raster_hfun_filename, 'wb'))
-        return raster_hfun_filename
-
+        with open(raster_hfun_filename, "wb") as fh:
+            pickle.dump(msh_t, fh)
+        # return raster_hfun_filename
+        return msh_t
 
 
         # the rest of the keys must be constraints
@@ -744,7 +773,7 @@ class HfunConfig(BaseModel):
         # print(request_opts.keys(), flush=True)
         # return constraints.apply(hfun)
 
-                
+
         # if local_contours_path is not None:
         #     local_contours = gpd.read_feather(local_contours_path)
         #     if len(local_contours) > 0:
@@ -831,20 +860,49 @@ class HfunConfig(BaseModel):
 
 
     def build_combined_hfun_msh_t_mpi(self, comm, output_rank=None, cache_directory=None):
-        if cache_directory:
+        root_rank = 0 if output_rank is None else output_rank
+
+        if cache_directory is not None:
             cached_filepath = self._get_final_hfun_msh_path(comm, cache_directory)
-            if cached_filepath.is_file() and (output_rank is None or comm.Get_rank() == output_rank):
-                # hfun_msh_t = jigsaw_msh_t()
-                # loadmsh(str(cached_filepath.resolve()), hfun_msh_t)
-                # return hfun_msh_t
-                return pickle.load(open(cached_filepath, 'rb'))
-        final_hfun_msh_t = self._build_final_raster_hfun_msh_t_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
-        should_write_cache = cache_directory and (output_rank is None or comm.Get_rank() == output_rank)
-        if should_write_cache:
-            savemsh(str(cached_filepath.resolve()), final_hfun_msh_t)
+            if cached_filepath.is_file():
+                if comm.Get_rank() == root_rank:
+                    logger.debug("Loading hfun_msh_t from cache: %s", str(cached_filepath))
+                    with open(cached_filepath, "rb") as fh:
+                        hfun_msh_t = pickle.load(fh)
+                else:
+                    hfun_msh_t = None
+            else:
+                hfun_msh_t = self._build_final_raster_hfun_msh_t_mpi(comm, output_rank=root_rank, cache_directory=cache_directory)
+                if comm.Get_rank() == root_rank and hfun_msh_t is not None:
+                    with open(cached_filepath, "wb") as fh:
+                        pickle.dump(hfun_msh_t, fh)
+        else:
+            hfun_msh_t = self._build_final_raster_hfun_msh_t_mpi(comm, output_rank=root_rank, cache_directory=cache_directory)
+        logger.debug(f"{comm.Get_rank()=} loaded {hfun_msh_t=}")
+        # if hfun_msh_t is not None:
+        #     hfun_msh_t = self._apply_sieve_to_gdf(hfun_msh_t)
+
         if output_rank is None:
-            return comm.bcast(final_hfun_msh_t, root=output_rank)
-        return final_hfun_msh_t
+            return comm.bcast(hfun_msh_t, root=root_rank)
+        return hfun_msh_t
+
+
+        # if cache_directory:
+        #     cached_filepath = self._get_final_hfun_msh_path(comm, cache_directory)
+        #     if cached_filepath.is_file() and (output_rank is None or comm.Get_rank() == output_rank):
+        #         # hfun_msh_t = jigsaw_msh_t()
+        #         # loadmsh(str(cached_filepath.resolve()), hfun_msh_t)
+        #         # return hfun_msh_t
+        #         return pickle.load(open(cached_filepath, 'rb'))
+        # # prebuild base geoms
+        # self._prebuild_raster_geom_gdf(comm, cache_directory=cache_directory)
+        # final_hfun_msh_t = self._build_final_raster_hfun_msh_t_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
+        # should_write_cache = cache_directory and (output_rank is None or comm.Get_rank() == output_rank)
+        # if should_write_cache:
+        #     pickle.dump(final_hfun_msh_t, open(cached_filepath, 'wb'))
+        # if output_rank is None:
+        #     return comm.bcast(final_hfun_msh_t, root=output_rank)
+        # return final_hfun_msh_t
 
     def _get_final_hfun_msh_path(self, comm, cache_directory):
         if comm.Get_rank() == 0:
@@ -862,7 +920,7 @@ class HfunConfig(BaseModel):
 
     def _build_final_raster_hfun_msh_t_mpi(self, comm, output_rank=None, cache_directory=None):
         root_rank = 0 if output_rank is None else output_rank
-        hfun_msh_t_list = self.build_uncombined_hfuns_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
+        hfun_msh_t_list = self.build_uncombined_hfuns_mpi(comm, output_rank=root_rank, cache_directory=cache_directory)
 
         def partition_list(input_list, N):
             """Partition `input_list` into sublists with roughly `N` items each."""
@@ -1471,26 +1529,57 @@ def get_local_contours_paths(comm, hfun_raster_window_requests, bbox_gdf, cache_
 #     return out_msh_t_tempfiles
 
 
+# def combine_msh_t_list(msh_t_list):
+#     msh_t = jigsaw_msh_t()
+#     msh_t.mshID = "euclidean-mesh"
+#     msh_t.ndims = +2
+#     msh_t.crs = CRS.from_epsg(4326)
+#     for window_mesh in msh_t_list:
+#         window_mesh.tria3["index"] += len(msh_t.vert2)
+#         msh_t.tria3 = np.append(
+#                 msh_t.tria3,
+#                 window_mesh.tria3,
+#                 axis=0
+#                 )
+#         if not window_mesh.crs.equals(msh_t.crs):
+#             utils.reproject(window_mesh, msh_t.crs)
+#         msh_t.vert2 = np.append(
+#             msh_t.vert2,
+#             window_mesh.vert2,
+#             axis=0
+#         )
+#         msh_t.value = np.append(msh_t.value, window_mesh.value)
+#     return msh_t
+
 def combine_msh_t_list(msh_t_list):
+    # Assuming jigsaw_msh_t() is a defined function that returns a mesh object
     msh_t = jigsaw_msh_t()
     msh_t.mshID = "euclidean-mesh"
     msh_t.ndims = +2
     msh_t.crs = CRS.from_epsg(4326)
+
+    # Initialize lists to accumulate data
+    tria3_list, vert2_list, value_list = [], [], []
+    vert2_length = 0
+
     for window_mesh in msh_t_list:
-        window_mesh.tria3["index"] += len(msh_t.vert2)
-        msh_t.tria3 = np.append(
-                msh_t.tria3,
-                window_mesh.tria3,
-                axis=0
-                )
         if not window_mesh.crs.equals(msh_t.crs):
             utils.reproject(window_mesh, msh_t.crs)
-        msh_t.vert2 = np.append(
-            msh_t.vert2,
-            window_mesh.vert2,
-            axis=0
-        )
-        msh_t.value = np.append(msh_t.value, window_mesh.value)
+
+        # Adjust index and accumulate data
+        window_mesh.tria3["index"] += vert2_length
+        tria3_list.append(window_mesh.tria3)
+        vert2_list.append(window_mesh.vert2)
+        value_list.append(window_mesh.value)
+
+        # Update the total length for vert2
+        vert2_length += len(window_mesh.vert2)
+
+    # Convert lists to numpy arrays
+    msh_t.tria3 = np.vstack(tria3_list)
+    msh_t.vert2 = np.vstack(vert2_list)
+    msh_t.value = np.concatenate(value_list)
+
     return msh_t
 
 
@@ -1581,8 +1670,9 @@ def get_argument_parser():
 
     def cache_directory_bootstrap(path_str):
         path = Path(path_str)
-        if not path.name == "hfun_build":
+        if path.name != "hfun_build":
             path /= "hfun_build"
+        path.mkdir(exist_ok=True, parents=True)
         return path
 
     parser = argparse.ArgumentParser()
@@ -1602,8 +1692,8 @@ def get_argument_parser():
 
 
 def make_plot(hfun_msh_t):
-    utils.tricontourf(hfun_msh_t, axes=plt.gca(), cmap='jet')
-    utils.triplot(hfun_msh_t, axes=plt.gca())
+    utils.tricontourf(hfun_msh_t, ax=plt.gca(), cmap='jet')
+    utils.triplot(hfun_msh_t, ax=plt.gca())
     plt.gca().axis('scaled')
     plt.show(block=True)
     return
@@ -1650,7 +1740,7 @@ def to_pickle(args, hfun_msh_t_tmpfile):
 #     return comm.bcast(hfun_config, root=0)
 
 
-def main(args: argparse.Namespace, comm=None):
+def entrypoint(args: argparse.Namespace, comm=None):
     """This program uses MPI and memoization. The memoization directory can be provided
     as en evironment variable GEOMESH_TEMPDIR, as the key 'cache_directory' in the yaml
     configuration file, or as the command line argument --cache-directory, and they
@@ -1684,7 +1774,7 @@ def main(args: argparse.Namespace, comm=None):
             # executor.shutdown(wait=True)
 
 
-def entrypoint():
+def main():
     sys.excepthook = lib.mpiabort_excepthook
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -1699,8 +1789,8 @@ def entrypoint():
     init_logger(args.log_level)
     from geomesh.cli.mpi import geom_build
     geom_build.init_logger(args.log_level)
-    main(args)
+    entrypoint(args)
 
 
 if __name__ == "__main__":
-    entrypoint()
+    main()

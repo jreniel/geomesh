@@ -1,52 +1,44 @@
-from datetime import timedelta
-from functools import cached_property, partial
-from multiprocessing import Pool, cpu_count
-from pathlib import Path
-from typing import List, Union
 import hashlib
 import logging
 import math
 import os
-import pickle
 import tempfile
 import typing
 import warnings
+from functools import cached_property, partial
+from multiprocessing import Pool, cpu_count
+from pathlib import Path
+from typing import List, Union
+from typing import Tuple
 
-from centerline import exceptions
-from centerline.geometry import Centerline
-from inpoly import inpoly2
-from jigsawpy import jigsaw_msh_t
-from matplotlib.tri import Triangulation
-from matplotlib.transforms import Bbox
-from mpi4py.futures import MPICommExecutor
-from numpy.linalg import norm
-from pyproj import CRS, Transformer
-from scipy.spatial import KDTree
-from shapely import equals_exact
-from shapely import ops
-from shapely import wkb
-from shapely.geometry import GeometryCollection
-from shapely.geometry import LineString
-from shapely.geometry import LinearRing
-from shapely.geometry import MultiLineString
-from shapely.geometry import MultiPoint
-from shapely.geometry import MultiPolygon
-from shapely.geometry import Point
-from shapely.geometry import Polygon
-from shapely.geometry import box
-from shapely.geometry import polygon
-from shapely.validation import explain_validity
-import PythonCDT as cdt
 import centerline.exceptions
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
+import PythonCDT as cdt
 import scipy.spatial
 import shapely.errors
+from centerline import exceptions
+from centerline.geometry import Centerline
+from inpoly import inpoly2
+from jigsawpy import jigsaw_msh_t
+from matplotlib.transforms import Bbox
+from matplotlib.tri import Triangulation
+from mpi4py.futures import MPICommExecutor
+from numpy.linalg import norm
+from pyproj import CRS, Transformer
+from scipy.spatial import KDTree
+from shapely import simplify
+from shapely import equals_exact, ops, wkb
+from shapely.geometry import (GeometryCollection, LinearRing, LineString,
+                              MultiLineString, MultiPoint, MultiPolygon, Point,
+                              Polygon, box, polygon)
 
 from geomesh import utils
+
+pd.options.mode.chained_assignment = 'raise'
 
 if typing.TYPE_CHECKING:
     from geomesh.raster.raster import Raster
@@ -90,7 +82,6 @@ Centerline.__init__ = _centerline_init
 
 # also need to patch _get_interpolated_boundary to use the original input geometry
 def _get_interpolated_boundary(self, boundary):
-    from shapely.geometry import LineString
     if self._interpolation_distance is None:
         return [self._create_point_with_reduced_coordinates(x, y) for x, y in zip(boundary.xy[0], boundary.xy[1])]
 
@@ -304,7 +295,7 @@ def subdivide_quadrilateral(p1_left: Point, p1_right: Point, linearring, npieces
         points_opposite_side[i+1],
         points_opposite_side[i]
         ], 7)) for i in range(npieces)]
-    
+
     return new_quads
 
 
@@ -618,6 +609,10 @@ def compute_quads_from_centerline(
         # logger.debug(f"iter {cnt=}: {p0=} {p1=} {p2=}")
         if equals_exact(p2, Point(centerline.coords[0]), tolerance=np.finfo(np.float32).eps):
             break
+        if cnt > 1000:
+            # TODO: This is very heuristic, me no like.
+            return []
+
 
 
     if base_quad is not None:
@@ -804,6 +799,14 @@ def compute_quads_from_centerline(
                 for new_quads_row in [[quad for quad in quad_row if not is_collapsed(quad.coords)]]
                 if len(new_quads_row) > 0
             ]
+        quads_coll = [
+            (new_quads_row, normal_vector)
+            for quad_row, normal_vector in quads_coll
+            for new_quads_row in [
+                [quad for quad in quad_row if all(length >= 1. for length in get_side_lengths(Polygon(quad)))]
+            ]
+            if len(new_quads_row) > 0
+        ]
         # quads_coll = [
         #         (new_quads_row, normal_vector)
         #         for quad_row, normal_vector in quads_coll
@@ -883,8 +886,7 @@ def resample_linear_ring(linear_ring, segment_length):
     except ValueError as err:
         if str(err) == "A linearring requires at least 4 coordinates.":
             return LinearRing()
-        else:
-            raise err
+        raise err
 
 
 def get_centerlines(patch, centerline_kwargs) -> MultiLineString:
@@ -989,6 +991,103 @@ def match_centerlines_to_patches(centerlines: List[LineString], final_patches: L
 
     return matched_centerlines_and_patches
 
+def build_thalweg_multipolygon_from_window(
+        xval,
+        yval,
+        zvals,
+        window,
+        raster_crs,
+        pad_width: int = 0,
+        lower_bound=None,
+        upper_bound=None,
+        geom_mask=None,
+        ):
+    pad_width = pad_width or 0
+    from geomesh.geom.raster import get_multipolygon_from_axes
+    pad_width_2d = ((pad_width, pad_width), (pad_width, pad_width))
+    # Compute the step size at the edges
+    xval_diff_before = xval[1] - xval[0]
+    xval_diff_after = xval[-1] - xval[-2]
+    yval_diff_before = yval[1] - yval[0]
+    yval_diff_after = yval[-1] - yval[-2]
+
+    # Generate padding for xval and yval
+    xval_pad_before = xval[0] - np.array(range(1, pad_width+1)) * xval_diff_before
+    xval_pad_after = xval[-1] + np.array(range(1, pad_width+1)) * xval_diff_after
+    yval_pad_before = yval[0] - np.array(range(1, pad_width+1)) * yval_diff_before
+    yval_pad_after = yval[-1] + np.array(range(1, pad_width+1)) * yval_diff_after
+
+    # Concatenate the padding and the original arrays
+    xval = np.concatenate([xval_pad_before[::-1], xval, xval_pad_after])
+    yval = np.concatenate([yval_pad_before[::-1], yval, yval_pad_after])
+
+    # Pad zvals as before
+    zvals = np.pad(zvals, pad_width_2d, mode='edge')
+    if not np.ma.is_masked(zvals):
+        zvals = np.ma.masked_array(zvals)
+
+    zvals[zvals > 0.] = np.nan
+    if raster_crs.is_geographic:
+        logger.debug(
+            "CRS is geographic, transforming points to local projection."
+        )
+        local_azimuthal_projection = "+proj=aeqd +R=6371000 +units=m "\
+            f"+lat_0={np.median(yval)} +lon_0={np.median(xval)}"
+        local_crs = CRS.from_user_input(local_azimuthal_projection)
+        transformer = Transformer.from_crs(raster_crs, local_crs, always_xy=True)
+        geographic_to_local = transformer.transform
+        x0, x1 = np.min(xval), np.max(xval)
+        y0, y1 = np.min(yval), np.max(yval)
+        (x0, x1), (y0, y1) = geographic_to_local([x0, x1], [y0, y1])
+        dx = np.diff(np.linspace(x0, x1, int(window.width)))[0]
+        dy = np.diff(np.linspace(y0, y1, int(window.height)))[0]
+    else:
+        dx = np.mean(np.diff(xval))
+        dy = np.mean(np.diff(yval))
+    dzdx, dzdy = np.gradient(zvals, dx, dy)
+    mask = np.logical_and(np.abs(dzdx) < 0.1, np.abs(dzdy) < 0.1)
+    bathy = zvals.copy()
+    non_saddle_values = zvals.copy()
+    non_saddle_values[mask] = np.nan
+    bathy[~mask] = np.nan
+    bathy[bathy > np.nanmean(non_saddle_values)] = np.nan
+    binary_image = zvals.copy()
+    binary_image[~np.isnan(bathy)] = 1
+    binary_image[np.isnan(bathy)] = 0
+    if lower_bound is not None:
+        binary_image[bathy < lower_bound] = 0
+    if upper_bound is not None:
+        binary_image[bathy > upper_bound] = 0
+
+    from scipy.ndimage import binary_dilation, binary_erosion
+    binary_image = binary_erosion(binary_dilation(binary_image))
+    # TODO: Might use binary erosion/dilation to cleanup tiny pieces
+    # verify
+    # plt.contourf(xval, yval, binary_image)
+    # plt.show()
+
+    # if not np.any(zvals.mask):
+    #     if zmin <= np.min(zvals) and zmax >= np.max(zvals):
+    #         return MultiPolygon([box(np.min(xval), np.min(yval), np.max(xval), np.max(yval))])
+    #     elif zmax < np.min(zvals) or zmin > np.max(zvals):
+    #         return
+    plt.ioff()
+    original_backend = plt.get_backend()
+    plt.switch_backend('agg')
+    fig, ax = plt.subplots()
+    multipolygon = get_multipolygon_from_axes(ax.contourf(xval, yval, binary_image, levels=[0.5, 1]))
+    plt.close(fig)
+    plt.switch_backend(original_backend)
+    plt.ion()
+
+    if geom_mask is not None:
+        # multipolygon = multipolygon.difference(geom_mask)
+        multipolygon = geom_mask.difference(multipolygon)
+
+    if isinstance(multipolygon, Polygon):
+        multipolygon = MultiPolygon([multipolygon])
+
+    return multipolygon
 
 def build_multipolygon_from_window(xval, yval, zvals, zmin, zmax, pad_width: int = 20):
     from geomesh.geom.raster import get_multipolygon_from_axes
@@ -1032,11 +1131,61 @@ def build_multipolygon_from_window(xval, yval, zvals, zmin, zmax, pad_width: int
     plt.switch_backend(original_backend)
     plt.ion()
 
+
     if isinstance(multipolygon, Polygon):
         multipolygon = MultiPolygon([multipolygon])
 
     return multipolygon
 
+def get_thalwegs_multipolygon_for_raster(
+        raster,
+        raster_opts=None,
+        window=None,
+        pad_width=0,
+        lower_bound=None,
+        upper_bound=None,
+        threshold_size=None,
+        ):
+    from geomesh import Geom, Raster
+    from geomesh.cli.raster_opts import get_raster_from_opts
+    if not isinstance(raster, Raster):
+        raster = get_raster_from_opts(
+                raster_path=raster,
+                window=window,
+                **raster_opts
+                )
+
+    if pad_width is None:
+        geom_mp = Geom(raster, zmax=0.).get_multipolygon()
+    else:
+        window_multipolygon = []
+        for xval, yval, zvals in raster:
+            zvals = zvals[0, :]
+            window_multipolygon.append(
+                    build_multipolygon_from_window(xval, yval, zvals, None, 0., pad_width=pad_width)
+                    )
+        geom_mp = ops.unary_union(window_multipolygon)
+    if geom_mp is not None and threshold_size is not None:
+        buffered_geom = geom_mp.buffer(-threshold_size).buffer(threshold_size)
+    else:
+        buffered_geom = None
+    window_multipolygon = []
+    for xval, yval, zvals in raster:
+        zvals = zvals[0, :]
+        window_multipolygon.append(
+                build_thalweg_multipolygon_from_window(
+                    xval,
+                    yval,
+                    zvals,
+                    raster.window,
+                    raster.crs,
+                    pad_width=pad_width,
+                    lower_bound=lower_bound,
+                    upper_bound=upper_bound,
+                    geom_mask=buffered_geom
+                    )
+                )
+    return ops.unary_union(window_multipolygon), raster.crs
 
 def get_multipolygon_for_raster(raster, zmin=None, zmax=None, raster_opts=None, window=None, pad_width=20):
     from geomesh import Geom, Raster
@@ -1044,7 +1193,11 @@ def get_multipolygon_for_raster(raster, zmin=None, zmax=None, raster_opts=None, 
     if zmax is None:
         zmax = 0 if zmin is None else np.finfo(np.float64).max
     if not isinstance(raster, Raster):
-        raster = get_raster_from_opts(raster, raster_opts, window)
+        raster = get_raster_from_opts(
+                raster_path=raster,
+                window=window,
+                **raster_opts
+                )
 
     if pad_width is None:
         geom = Geom(raster, zmin=zmin, zmax=zmax)
@@ -1130,6 +1283,8 @@ def get_quad_group_data(
 #     return list(node_mappings.keys()), connectivity_table
 
 from collections import defaultdict
+
+
 def polygon_orient_wrapper(poly):
     return polygon.orient(poly, sign=1.)
 
@@ -1147,12 +1302,17 @@ def poly_gdf_to_elements(poly_gdf):
     # poly_gdf.loc[cw_indexes, 'geometry'] = poly_gdf.loc[cw_indexes, 'geometry'].map(lambda x: polygon.orient(x, sign=1.0))
     # poly_gdf.geometry.map(lambda x: polygon.orient(x, sign=1.))
     print("begin creating node mappings", flush=True)
+    # node_mappings = defaultdict(lambda: len(node_mappings))
+    # element_coords = [list(row.geometry.exterior.coords[:-1]) for row in poly_gdf.itertuples()]
+    # element_indices = [[node_mappings[tuple(tuple(x) for x in p)] for p in element_coords]]
+    # return list(node_mappings.keys()), element_indices
     node_mappings = defaultdict(lambda: len(node_mappings))
     connectivity_table = []
     for row in poly_gdf.itertuples():
         element_coords = row.geometry.exterior.coords[:-1]
         element_indices = [node_mappings[p] for p in element_coords]
         connectivity_table.append(element_indices)
+    print("done with node mappings", flush=True)
     return list(node_mappings.keys()), connectivity_table
 
 # def poly_gdf_to_elements(poly_gdf):
@@ -1247,7 +1407,7 @@ def slope_collinearity_test(p0, p1, p2):
     x3, y3 = p2
     if np.isclose(x2 - x1, 0):
         return np.isclose(x3 - x2, 0)
-    
+
     # Otherwise, calculate the two slopes and compare them using isclose
     slope_AB = (y2 - y1) / (x2 - x1)
     slope_BC = (y3 - y2) / (x3 - x2)
@@ -1322,7 +1482,7 @@ def manually_triangulate(
 #             # ...
 
 #     coords_list = list(linear_ring.coords)
-  
+
 #     # Add final triangle
 #     if len(coords_list) == 3:
 #         triangles.append(LinearRing(coords_list))
@@ -1339,7 +1499,7 @@ def point_on_line_segment(point, line_segment):
     if (min(x1, x2) <= px <= max(x1, x2)) and (min(y1, y2) <= py <= max(y1, y2)):
         # Use cross product to check collinearity
         cross_product = (py - y1) * (x2 - x1) - (px - x1) * (y2 - y1)
-        
+
         # If cross product is near zero, the point lies on the line
         if abs(cross_product) < np.finfo(float).eps:
             # Use dot product to check if point lies on the segment
@@ -1409,7 +1569,7 @@ def get_intersecting_edges(group) -> List[LineString]:
             LineString([tria.exterior.coords[i], tria.exterior.coords[(i+1)%3]])
             for i in range(3)
         ]
-        
+
         for row in group[group['element_type'] == 'quad'].itertuples():
             quad: Polygon = row.geometry
             quad_edges = [
@@ -1433,7 +1593,7 @@ def get_intersecting_edges(group) -> List[LineString]:
         plt.show(block=False)
         breakpoint()
         raise ValueError("No intersecting edges found.")
-    
+
     return list(intersecting_edges)
 
 
@@ -1520,14 +1680,14 @@ def get_intersecting_edges(group) -> List[LineString]:
 #         # Extract start and end points for the linestrings
 #         start_points = np.array(list(gdf.geometry.apply(lambda line: np.array(line.coords[0]))))
 #         end_points = np.array(list(gdf.geometry.apply(lambda line: np.array(line.coords[-1]))))
-        
+
 #         # Calculate the direction vectors
 #         direction_vectors = end_points - start_points
 
 #         # Normalize the vectors
 #         norms = np.linalg.norm(direction_vectors, axis=1).reshape(-1, 1)
 #         normalized_vectors = direction_vectors / norms
-        
+
 #         return normalized_vectors
 
 #     # Assuming the linestrings are in the 'geometry' column
@@ -1610,7 +1770,7 @@ def get_intersecting_edges(group) -> List[LineString]:
 #             #         if tria_to_quad_edge_intersection.is_empty:
 #             #             continue
 #             #         elif isinstance(tria_to_quad_edge, Point):
-                        
+
 #             #         else:
 #             #         print(tria_to_quad_edge_intersection)
 #             #     breakpoint()
@@ -1669,14 +1829,14 @@ def get_intersecting_edges(group) -> List[LineString]:
 #     for edge in edges:
 #         graph[edge.coords[0]].append(edge.coords[1])
 #         graph[edge.coords[1]].append(edge.coords[0])
-    
+
 #     for point in missing_points:
 #         # This assumes you have some logic to determine which nodes a missing point should connect to
 #         connected_nodes = determine_connections(point, graph)
 #         for node in connected_nodes:
 #             graph[point].append(node)
 #             graph[node].append(point)
-    
+
 #     return graph
 
 # def traverse_graph(graph):
@@ -1702,7 +1862,7 @@ def get_intersecting_edges(group) -> List[LineString]:
 #                     visited_edges.add(edge)
 #                     current_node = neighbor
 #                     print(f"Chosen neighbor: {neighbor}")
-                    
+
 #                     # Check if we're revisiting a node within this traversal
 #                     if current_node in visited_nodes:
 #                         # Find the index of the first occurrence of this node in the ring
@@ -1939,7 +2099,7 @@ def get_linear_rings_from_trias_and_edges(mesh_subset, trias_to_drop, intersecti
 #         # this_triangles = ops.triangulate(inner_group)
 
 
-        
+
 
 # def get_linear_rings_from_trias_and_edges(mesh_subset, trias_to_drop, intersecting_edges) -> typing.List[LinearRing]:
 #     edges_merged = ops.linemerge(intersecting_edges)
@@ -2007,14 +2167,14 @@ def get_linear_rings_from_trias_and_edges(mesh_subset, trias_to_drop, intersecti
 
 
 # def elements_are_conforming(element_left, element_right) -> bool:
-#     if not isinstance(element_left, LinearRing): 
+#     if not isinstance(element_left, LinearRing):
 #         raise ValueError(f"Argument element_left must be a LinearRing but got {element_left=}")
-        
+
 #     if not isinstance(element_right, LinearRing):
 #         raise ValueError(f"Argument element_right must be a LinearRing but got {element_right=}")
 
 #     eps = np.finfo(np.float32).eps
-    
+
 #     # Create list of edges for element_left
 #     mod_left = len(element_left.coords) - 1
 #     element_left_edges = [
@@ -2210,7 +2370,7 @@ def select_nodes_to_move(bad_tria, mesh_quad_edges_gdf, mesh_quad_edges_buffered
             how='inner',
             predicate='intersects',
             )
-    
+
 
 
 
@@ -2221,7 +2381,7 @@ def select_nodes_to_move(bad_tria, mesh_quad_edges_gdf, mesh_quad_edges_buffered
 def do_extended_tria_method(mesh_subset, trias_to_drop, conforming_trias, reason) -> List[Polygon]:
 
     conforming_trias_gdf = gpd.GeoDataFrame(geometry=conforming_trias, crs=mesh_subset.crs)
-    
+
     mesh_subset_quad_edges = []
     for row in mesh_subset[mesh_subset['element_type'] == 'quad'].itertuples():
         quad: Polygon = row.geometry
@@ -3503,7 +3663,7 @@ class Quads:
         # # utils.remove_flat_triangles(new_msh_t)
         # # self._fix_triangles_outside_SCHISM_skewness_tolerance(new_msh_t)
         # return new_msh_t
-    
+
 
     #     target_mesh.plot(ax=plt.gca(), facecolor='lightgrey', alpha=0.3)
     #     target_mesh.plot(ax=plt.gca(), facecolor='none', edgecolor='k', linewidth=0.3)
@@ -3596,7 +3756,7 @@ class Quads:
     #         breakpoint()
     #         # verify
     #         # for group in
-                    
+
 
 
     #         graph = {}
@@ -3744,32 +3904,144 @@ class Quads:
         linear_ring_left = LinearRing(coords_left)
         linear_ring_right = LinearRing(coords_right)
         return elements_are_conforming(linear_ring_left, linear_ring_right)
-    
+
+    @staticmethod
+    def _get_chunk_min_side_length(chunk):
+        return chunk.geometry.map(lambda x: np.min(get_side_lengths(Polygon(x))))
+
+    # @staticmethod
+    # def _get_min_distance_chunk(coords):
+
+    @staticmethod
+    def _get_distance_from_chunk(chunk, quads_poly_gdf_uu):
+        return chunk.geometry.map(lambda x: x.distance(quads_poly_gdf_uu))
+
+
     def _get_new_msh_t_from_cdt(self, msh_t):
 
         def get_constrained_triangulation():
-            vertices, elements = poly_gdf_to_elements(self.quads_poly_gdf)
+            print("begin get_constrained_triangulation()", flush=True)
+            quads_poly_gdf = self.quads_poly_gdf.copy()
+            bnd_mp = utils.get_geom_msh_t_from_msh_t_as_mp(msh_t)
+            joined = gpd.sjoin(
+                    quads_poly_gdf.to_crs(msh_t.crs),
+                    gpd.GeoDataFrame(geometry=list(bnd_mp.geoms), crs=msh_t.crs),
+                    how='left',
+                    predicate='within',
+                    # predicate='intersects',
+                    )
+            quads_poly_gdf.drop(index=joined[joined.index_right.isna()].index, inplace=True)
+            # with Pool(cpu_count()) as pool:
+            #     quads_poly_gdf["min_side_length"] = pd.concat(
+            #             pool.map(
+            #                 self._get_chunk_min_side_length,
+            #                 np.array_split(quads_poly_gdf.to_crs("epsg:6933").geometry, cpu_count())
+            #                 )
+            #             ).values
+            # with Pool(cpu_count()) as pool:
+            #     quads_poly_gdf["min_side_length"] =
+            #     pd.concat(np.quads_poly_gdf.to_crs("epsg:6933").geometry.map(lambda x: np.min(get_side_lengths(Polygon(x))))
+            # quads_poly_gdf.drop(index=quads_poly_gdf[quads_poly_gdf["min_side_length"] < 10.].index, inplace=True)
+            # quads_poly_gdf.drop(columns=["min_side_length"], inplace=True)
+            # vertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs(msh_t.crs))
+            from shapely.ops import transform
+            from pyproj import Transformer
+            del bnd_mp, joined
             def get_msh_t_vertices():
+                # with Pool(cpu_count()) as pool:
+                #     result = pool.map(
+                #                 self._get_min_distance_chunk,
+                #                 np.array_split(msh_t.vert2["coord"], cpu_count()),
+                #                 )
+                # print("begin get_msh_t_vertices", flush=True)
+                # coords_gdf = gpd.GeoDataFrame(geometry=[Point(x) for x in msh_t.vert2["coord"]], crs=msh_t.crs).to_crs("epsg:6933")
+                # quads_poly_gdf_uu = transform(Transformer.from_crs(self.quads_poly_gdf.crs, "epsg:6933", always_xy=True).transform, self.quads_poly_gdf_uu)
+                # print("begin compouting distances", flush=True)
+                # with Pool(cpu_count()) as pool:
+                #     distances = pd.concat(
+                #             pool.starmap(
+                #                 self._get_distance_from_chunk,
+                #                 [(chunk, quads_poly_gdf_uu) for chunk in np.array_split(coords_gdf, cpu_count())]
+                #                 )
+                #             )
+                # distance_threshold = 10.
+
+                # # Filter the points based on the distance threshold
+                # filtered_points = coords_gdf.geometry[distances > distance_threshold]
+
+                # # Extract the coordinates of the points that meet the criteria
+                # return [(point.x, point.y) for point in filtered_points]
+
+
+                # qvertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs("epsg:6933"))
+                # distances, indices = KDTree(vertices[:, 0], vertices[:, 1]).query(utils.reprojectmsh_t.vert2["coord"])
+                # dixs = np.where(distances < 3.)
+
+
                 # IN lat/lon flot32 eps is 0.164 mm and float16.eps is ~1.34 meters
                 # Using large epsilon (~1 meter) avoids very narrow triangles.
                 eps = 0.25*np.finfo(np.float16).eps if msh_t.crs.is_geographic else 0.25
-                # eps = np.finfo(np.float32).eps
-                msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=list(map(lambda x: Point(x).buffer(eps), msh_t.vert2["coord"].tolist())), crs=msh_t.crs)
+                # eps = .
+                # msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=list(map(lambda x: Point(x).buffer(eps), msh_t.vert2["coord"].tolist())), crs=msh_t.crs)
+                msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=[Point(x) for x in msh_t.vert2["coord"]], crs=msh_t.crs).to_crs("epsg:6933")
+                msh_t_vert2_buffered_gdf["geometry"] = msh_t_vert2_buffered_gdf.geometry.map(lambda x: x.buffer(eps))
                 joined = gpd.sjoin(
-                        msh_t_vert2_buffered_gdf.to_crs(self.quads_poly_gdf.crs),
+                        msh_t_vert2_buffered_gdf,
                         # quads_poly_buffered,
-                        self.quads_poly_gdf,
+                        quads_poly_gdf.to_crs("epsg:6933"),
                         how='left',
                         predicate='intersects',
+                        # predicate='within',
                         )
                 return msh_t.vert2["coord"][joined[joined.index_right.isna()].index.unique(), :].tolist()
-            vertices.extend(get_msh_t_vertices())
+            vertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs("epsg:6933"))
+            vertices = np.array(vertices)
+            elements = np.array(elements)
+            threshold = 1.0
+            distances, indices = KDTree(vertices).query(vertices, k=2)
+            distances = distances[:, 1]
+            indices = indices[:, 1]
+            while distances.min() < threshold:
+                print("doing iter")
+                _idxs = np.where(distances <= threshold)[0]
+                node_indices = np.arange(vertices.shape[0])[_idxs]
+                close_pairs = indices[_idxs]
+                mask = node_indices < close_pairs
+                node_indices = node_indices[mask]
+                close_pairs = close_pairs[mask]
+                mapping = np.arange(vertices.shape[0])
+                mapping[close_pairs] = node_indices
+                elements = mapping[elements]
+                is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 4, arr=elements, axis=1)
+                elements = elements[~is_collapsed]
+                vertices, elements = self._cleanup_isolates(vertices, elements)
+                distances, indices = KDTree(vertices).query(vertices, k=2)
+                distances = distances[:, 1]
+                indices = indices[:, 1]
+            transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
+            vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
+            print("begin get_msh_t_vertices", flush=True)
+            vertices = np.vstack([
+                vertices,
+                np.array(get_msh_t_vertices())
+                ])
+            del quads_poly_gdf
+            # new_vertices = np.array(transformer.transform(new_vertices[:, 0], new_vertices[:, 1])).T
+            # tree = KDTree(new_vertices)
+            # distances, indices = tree.query(vertices, k=1)  # k=1 for nearest neighbor
+            # # breakpoint()
+            # # res = tree1.query(
+            # vertices =
+
+
+            # vertices.extend(get_msh_t_vertices())
             t = cdt.Triangulation(
                     cdt.VertexInsertionOrder.AS_PROVIDED,
                     cdt.IntersectingConstraintEdges.RESOLVE,
                     0.
                     )
             print("begin insert vertices", flush=True)
+            # print(vertices, flush=True)
             t.insert_vertices([cdt.V2d(*coord) for coord in vertices])
             print("begin insert edges", flush=True)
             t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in elements_to_edges(elements)])
@@ -3789,8 +4061,7 @@ class Quads:
                 # Begin by erasing the super triangle, since we definitely don't need that one.
                 t.erase_super_triangle()
                 # t.erase_outer_triangles_and_holes()
-                # t.erase_outer_triangles()
-                # we assume operations over members of t are not safe, so we extract the remaining
+                # t.erase_outer_triangles(:set laststatus=2                # we assume operations over members of t are not safe, so we extract the remaining
                 # outputs into numpy arrays.
                 print("get constrained triangulation vertices", flush=True)
                 vertices = np.array([(v.x, v.y) for v in t.vertices])
@@ -3819,25 +4090,25 @@ class Quads:
 
                 def get_area_limited_vertices_elements():
                     vertices, all_elements, crs = get_vertices_and_unfiltered_elements()
-                    print("Eliminate constrained elements with area less than 1 square meter", flush=True)
-                    nprocs = cpu_count()
-                    chunksize = len(vertices) // nprocs
-                    with Pool(nprocs) as pool:
-                        original_mesh_gdf = gpd.GeoDataFrame(
-                            geometry=list(pool.map(
-                                Polygon,
-                                vertices[all_elements, :].tolist(),
-                                chunksize
-                                )),
-                            crs=crs
-                        )
-                    original_mesh_gdf = original_mesh_gdf[original_mesh_gdf.to_crs("epsg:6933").geometry.area >= 1.]
-                    vertices, all_elements = poly_gdf_to_elements(original_mesh_gdf)
+                    # print("Eliminate constrained elements with area less than 1 square meter", flush=True)
+                    # nprocs = cpu_count()
+                    # chunksize = len(vertices) // nprocs
+                    # with Pool(nprocs) as pool:
+                    #     original_mesh_gdf = gpd.GeoDataFrame(
+                    #         geometry=list(pool.map(
+                    #             Polygon,
+                    #             vertices[all_elements, :].tolist(),
+                    #             chunksize
+                    #             )),
+                    #         crs=crs
+                    #     )
+                    # original_mesh_gdf = original_mesh_gdf[original_mesh_gdf.to_crs("epsg:6933").geometry.area >= 1.]
+                    # # original_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(original_mesh_gdf)
+                    # vertices, all_elements = poly_gdf_to_elements(original_mesh_gdf)
                     vertices = np.array(vertices)
                     all_elements = np.array(all_elements)
                     return vertices, all_elements, crs
 
-                vertices, all_elements, crs = get_area_limited_vertices_elements()
 
                 def get_centroid_based_element_mask():
                     print("get original_geom_msh_t", flush=True)
@@ -3851,8 +4122,7 @@ class Quads:
                     print("inpoly2-2 now", flush=True)
                     centroid_in_quads_poly = np.array(inpoly2(centroids, quads_bnd_as_msh_t.vert2['coord'], quads_bnd_as_msh_t.edge2['index'])[0], dtype=bool)
                     return np.logical_or(centroid_in_base_poly, centroid_in_quads_poly)
-                centroid_based_element_mask = get_centroid_based_element_mask()
-                target_elements = all_elements[centroid_based_element_mask, :]
+
 
                 # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
                 # plt.show(block=False)
@@ -3912,9 +4182,12 @@ class Quads:
 
                 #     return elements_with_pinched_nodes, elements_without_pinched_nodes
 
+                vertices, all_elements, crs = get_area_limited_vertices_elements()
+                centroid_based_element_mask = get_centroid_based_element_mask()
+                target_elements = all_elements[centroid_based_element_mask, :]
                 pinched_element_indices = get_element_indices_with_pinched_nodes(target_elements)
                 while len(pinched_element_indices) > 0:
-                    elements_with_pinched_nodes, target_elements = separate_elements_by_pinched_nodes(target_elements, pinched_element_indices)
+                    _elements_with_pinched_nodes, target_elements = separate_elements_by_pinched_nodes(target_elements, pinched_element_indices)
                     pinched_element_indices = get_element_indices_with_pinched_nodes(target_elements)
                     print(f"{len(pinched_element_indices)} pinched nodes remaining", flush=True)
 
@@ -3939,15 +4212,64 @@ class Quads:
             print("begin getting centroid based elements", flush=True)
             vertices, elements, crs = get_centroid_based_elements()
 
+            def orient_ccw(indices):
+                # Get the actual coordinates
+                points = vertices[indices]
+
+                # Calculate the cross product of vectors (p2 - p1) and (p3 - p1)
+                v1 = points[1] - points[0]
+                v2 = points[2] - points[0]
+                cross_product = np.cross(v1, v2)
+
+                # If cross product is negative, reverse the order of points
+                if cross_product < 0:
+                    return indices[::-1]
+                return indices
+
+
+            vertices = np.array(Transformer.from_crs(crs, "epsg:6933", always_xy=True).transform(*vertices.T)).T
+            threshold = 3.
+            distances, indices = KDTree(vertices).query(vertices, k=2)
+            distances = distances[:, 1]
+            indices = indices[:, 1]
+            while distances.min() < threshold:
+                print("doing iter")
+                _idxs = np.where(distances <= threshold)[0]
+                node_indices = np.arange(vertices.shape[0])[_idxs]
+                close_pairs = indices[_idxs]
+                mask = node_indices < close_pairs
+                node_indices = node_indices[mask]
+                close_pairs = close_pairs[mask]
+                mapping = np.arange(vertices.shape[0])
+                mapping[close_pairs] = node_indices
+                elements = mapping[elements]
+                is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 3, arr=elements, axis=1)
+                elements = elements[~is_collapsed]
+                elements = np.apply_along_axis(orient_ccw, axis=1, arr=elements)
+                vertices, elements = self._cleanup_isolates(vertices, elements)
+                distances, indices = KDTree(vertices).query(vertices, k=2)
+                distances = distances[:, 1]
+                indices = indices[:, 1]
+                print(distances.min())
+            # transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
+            # vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
+            # print("begin get_msh_t_vertices", flush=True)
+            # vertices = np.vstack([
+            #     vertices,
+            #     np.array(get_msh_t_vertices())
+            #     ])
+
             # convert into the final_gdf and return
-            nprocs = cpu_count()
-            chunksize = len(vertices) // nprocs
-            with Pool(nprocs) as pool:
-                print("make final gdf", flush=True)
-                final_gdf = gpd.GeoDataFrame(
-                    geometry=list(pool.map(Polygon, vertices[elements, :].tolist(), chunksize)),
-                    crs=crs,
-                    )
+            vertices = np.array(Transformer.from_crs("epsg:6933", crs, always_xy=True).transform(*vertices.T)).T
+            return vertices, elements, crs
+            # nprocs = cpu_count()
+            # chunksize = len(vertices) // nprocs
+            # with Pool(nprocs) as pool:
+            #     print("make final gdf", flush=True)
+            #     final_gdf = gpd.GeoDataFrame(
+            #         geometry=list(pool.map(Polygon, vertices[elements, :].tolist(), chunksize)),
+            #         crs=crs,
+            #         )
             # verify
             # final_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
             # plt.show(block=False)
@@ -3955,7 +4277,7 @@ class Quads:
             # raise
 
             # Debug: omit non-conforming filter
-            return final_gdf
+            # return final_gdf
 
             # print("begin filtering out non-conforming", flush=True)
             # # final_gdf_buffered = final_gdf.copy()
@@ -4025,7 +4347,7 @@ class Quads:
             # final_mesh_gdf = pd.c
             # breakpoint()
 
-            # print("generate final_mesh_gdf (the hybrid one)", flush=True)
+            # print("gener:ate final_mesh_gdf (the hybrid one)", flush=True)
             # final_mesh_gdf = pd.concat([tri_mesh_gdf, self.quads_poly_gdf.loc[joined[~joined.index_right.isna()].index_right.unique()].to_crs(tri_mesh_gdf.crs)], ignore_index=True)
             # final_mesh_gdf = final_mesh_gdf[final_mesh_gdf.to_crs("epsg:6933").geometry.area >= 1.]
             # breakpoint()
@@ -4048,74 +4370,383 @@ class Quads:
             return final_mesh_gdf
 
         def get_output_msh_t():
+
             print("begin generating final_mesh_gdf", flush=True)
-            final_mesh_gdf = get_final_mesh_gdf()
+            # final_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(get_final_mesh_gdf())
+            # final_mesh_gdf = get_final_mesh_gdf()
+            # final_mesh_gdf = get_conforming_tri_mesh_gdf()
+
+            # final_mesh_gdf.to_feather("final_mesh_gdf_unfiltered_for_debug.feather")
+            # raise
+            # final_mesh_gdf.to_feather("final_mesh_gdf_unfiltered_for_debug.feather")
+            # final_mesh_gdf = gpd.read_feather()
+
+            # final_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(final_mesh_gdf)
+            # final_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(final_mesh_gdf)
             # verification
             # final_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
             # final_mesh_gdf.to_feather("finalized_mesh.feather")
             # plt.show(block=False)
             # breakpoint()
-            print("begin convering final_mesh_gdf to msh_t", flush=True)
-            output_msh_t = self.jigsaw_msh_t_from_nodes_elements(*poly_gdf_to_elements(final_mesh_gdf), crs=final_mesh_gdf.crs)
-            print("split bad quality quads", flush=True)
-            utils.split_bad_quality_quads(output_msh_t)
+            # print("begin convering final_mesh_gdf to msh_t", flush=True)
+            vertices, elements, crs = get_conforming_tri_mesh_gdf()
+            # output_msh_t = self.jigsaw_msh_t_from_nodes_elements(*poly_gdf_to_elements(final_mesh_gdf), crs=final_mesh_gdf.crs)
+            output_msh_t = self.jigsaw_msh_t_from_nodes_elements(vertices, elements, crs=crs)
+            # del final_mesh_gdf
+            print("cleanup pinched nodes", flush=True)
+            utils.cleanup_pinched_nodes_iter(output_msh_t)
+
+#             import pickle
+#             with open("final_output_msh_t_with_negative_elements.pkl", "wb") as file:
+#                 pickle.dump(output_msh_t, file)
+
+#             raise
+
+#             utils.ensure_ccw_triangles(output_msh_t)
+            # self._fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(output_msh_t)
+            # print("split bad quality quads", flush=True)
+            # utils.split_bad_quality_quads(output_msh_t)
+            # print("swap large angle edges", flush=True)
+            # utils.swap_large_angle_edges(output_msh_t, 175.)
             return output_msh_t
         print("begin generating output_msh_t", flush=True)
         return get_output_msh_t()
-    
+
+    @classmethod
+    def _fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(cls, output_msh_t):
+
+        original_crs = output_msh_t.crs
+        utils.reproject(output_msh_t, "epsg:6933")
+        coord = output_msh_t.vert2["coord"]
+        index = output_msh_t.tria3["index"]
+        elem_nodes = coord[index]
+        edge_dx_dy = np.abs(elem_nodes - np.roll(elem_nodes, shift=-1, axis=1))
+        euclidean_distances = np.sqrt(np.sum(np.square(edge_dx_dy), axis=2))
+
+        # Calculate vectors AB and AC for each triangle
+        vec_AB = elem_nodes[:, 1, :] - elem_nodes[:, 0, :]
+        vec_AC = elem_nodes[:, 2, :] - elem_nodes[:, 0, :]
+
+        # Calculate the area of each triangle using the cross product (in 2D)
+        area = 0.5 * np.abs(vec_AB[:, 0] * vec_AC[:, 1] - vec_AB[:, 1] * vec_AC[:, 0])
+        equivalent_radius = area / np.pi
+        row_wise_max = np.max(euclidean_distances, axis=1)
+        skewness = row_wise_max / equivalent_radius
+
+        row_wise_min_dist = np.min(euclidean_distances, axis=1)
+
+        # Calculate the cosine of angles using the dot product formula
+        cos_angle_A = (np.sum(vec_AB * vec_AC, axis=1) /
+                      (np.linalg.norm(vec_AB, axis=1) * np.linalg.norm(vec_AC, axis=1)))
+        cos_angle_B = (np.sum(-vec_AB * (elem_nodes[:, 2, :] - elem_nodes[:, 1, :]), axis=1) /
+                      (np.linalg.norm(vec_AB, axis=1) * np.linalg.norm(elem_nodes[:, 2, :] - elem_nodes[:, 1, :], axis=1)))
+        cos_angle_C = (np.sum(-vec_AC * (elem_nodes[:, 1, :] - elem_nodes[:, 2, :]), axis=1) /
+                      (np.linalg.norm(vec_AC, axis=1) * np.linalg.norm(elem_nodes[:, 1, :] - elem_nodes[:, 2, :], axis=1)))
+
+        # Calculate angles in degrees
+        angle_A = np.degrees(np.arccos(np.clip(cos_angle_A, -1.0, 1.0)))
+        angle_B = np.degrees(np.arccos(np.clip(cos_angle_B, -1.0, 1.0)))
+        angle_C = np.degrees(np.arccos(np.clip(cos_angle_C, -1.0, 1.0)))
+
+        # get mask for any row with angle > 175 degrees
+        mask_angle_greater_175 = np.any(np.vstack([angle_A, angle_B, angle_C]) > 175, axis=0)
+
+        # get mask for any row with angle < 5 degrees
+        mask_angle_less_than_5 = np.any(np.vstack([angle_A, angle_B, angle_C]) < 5, axis=0)
+
+        # Calculate the angles
+
+        # get mask for any row with angle > 175
+
+        # get mas for any row with angle < 5
+
+        mask = np.logical_or(skewness > 60., row_wise_min_dist < 1.)
+        # mask = np.logical_or(mask, mask_angle_greater_175)
+        # mask = np.logical_or(mask, mask_angle_less_than_5)
+        element_index = np.where(mask)
+        participant_node_indexes = np.array(list(set(index[element_index].flatten().tolist())))
+        matches = np.isin(index, participant_node_indexes)
+        matching_row_indices = np.any(matches, axis=1)
+        matching_rows = np.where(matching_row_indices)[0]
+
+        with Pool(cpu_count()) as pool:
+            triangles = pool.map(Polygon, [coord[index[this_index]] for this_index in matching_rows])
+
+        the_uus = ops.unary_union(triangles)
+        non_matching_row_indices = np.any(~matches, axis=1)
+        non_matching_rows = np.where(non_matching_row_indices)[0]
+        # remaining_index = index[non_matching_rows, :]
+
+        if isinstance(the_uus, Polygon):
+            the_uus = MultiPolygon([the_uus])
+        tree = KDTree(coord)
+        new_trias = []
+        for i, poly in enumerate(the_uus.geoms):
+            boundary = poly.boundary
+            t = cdt.Triangulation(
+                    cdt.VertexInsertionOrder.AS_PROVIDED,
+                    cdt.IntersectingConstraintEdges.RESOLVE,
+                    0.
+                    )
+            if not hasattr(boundary, "geoms"):
+                coords = boundary.coords
+            else:
+                largest_geom = max(boundary.geoms, key=lambda bnd: bnd.length)
+                coords = largest_geom.coords
+
+            edges = [(i, (i + 1) % len(coords)) for i in range(len(coords))]
+            coords, edges = cls._clean_and_renumber(coords, edges)
+            t.insert_vertices([cdt.V2d(*coord) for coord in coords])
+            try:
+                t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in edges])
+            except RuntimeError:
+                print(np.array(coords))
+                print(np.array(coords).shape[0])
+                print(list(set(np.array(coords).tolist())))
+                print(len(list(set(np.array(coords).tolist()))))
+
+                raise
+            t.erase_outer_triangles_and_holes()
+            vertices = np.array([(v.x, v.y) for v in t.vertices])
+            _, ii = tree.query(vertices)
+            vmap = {old_idx: new_idx for old_idx, new_idx in enumerate(ii)}
+            for tria in t.triangles:
+                # Retrieve the original vertex indices for the current triangle
+                original_indices = tria.vertices
+                # Map these indices to the new indices
+                remapped_indices = [vmap[old_idx] for old_idx in original_indices]
+                # Append the remapped triangle to new_elements
+                new_trias.append((remapped_indices, 0))
+        output_msh_t.tria3 = np.hstack([output_msh_t.tria3, np.array(new_trias, dtype=jigsaw_msh_t.TRIA3_t)])
+        utils.reproject(output_msh_t, original_crs)
+
+    @staticmethod
+    def _cleanup_isolates(vertices, elements) -> Tuple[np.array, np.array]:
+        """
+        Removes nodes that exist in vertices but are not referenced in elements.
+        Returns the filtered vertices and renumbered elements array.
+        """
+        node_indexes = np.arange(vertices.shape[0])
+        used_indexes, inverse = np.unique(elements, return_inverse=True)
+        isin = np.isin(node_indexes, used_indexes, assume_unique=True)
+        if np.all(isin):
+            # nothing to do, return the original as they are
+            return vertices, elements
+        vert2_idxs = np.where(isin)[0]
+        df = pd.DataFrame(index=node_indexes).iloc[vert2_idxs].reset_index()
+        mapping = {v: k for k, v in df.to_dict()["index"].items()}
+        elements = np.array([mapping[x] for x in used_indexes])[inverse].reshape(
+            elements.shape
+        )
+        vertices = vertices[vert2_idxs]
+        return vertices, elements
     @staticmethod
     def _get_buffered_geom(geom, eps=None):
         eps = eps or np.finfo(np.float32).eps
         return geom.buffer(eps)
 
-    def _fix_triangles_outside_SCHISM_skewness_tolerance(self, msh_t):
+    @staticmethod
+    def _clean_and_renumber(coords, edges):
+        # Check if the first and last points are the same
+        if coords[0] == coords[-1]:
+            # Remove the last point
+            coords = coords[:-1]
+
+            # Renumber the edges
+            new_edges = []
+            for start, end in edges:
+                if end == len(coords):  # If it was pointing to the last (now removed) point
+                    end = 0  # Point it to the first point instead
+                new_edges.append((start, end))
+            new_edges = new_edges[:-1]
+        else:
+            new_edges = edges
+
+        return coords, edges
+
+    @staticmethod
+    def _get_new_trias(boundary):
+        coords = boundary.coords
+        edges = [(i, (i + 1) % len(coords)) for i in range(len(coords))]
+        # coords, edges = self._clean_and_renumber(coords, edges)
+        t = cdt.Triangulation(
+                cdt.VertexInsertionOrder.AS_PROVIDED,
+                cdt.IntersectingConstraintEdges.RESOLVE,
+                0.
+                )
+        t.insert_vertices([cdt.V2d(*coord) for coord in coords])
+        try:
+            # using simplify above sould have fixed this but I don't dare to check
+            t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in edges])
+        except RuntimeError:
+            print(f"{edges=}")
+            print(f"{list(coords)=}")
+            # breakpoint()
+            # raise
+            # continue
+            return []
+        t.erase_outer_triangles_and_holes()
+        vertices = np.array([(v.x, v.y) for v in t.vertices])
+        elements = np.array([tria.vertices for tria in t.triangles])
+        return list(map(Polygon, vertices[elements, :].tolist()))
+
+    @classmethod
+    def _fix_triangles_outside_SCHISM_skewness_tolerance(cls, tria3_gdf):
         # SCHISM can tolerate sknewness<=60 (defined as (largest side)/(equivalent radius), where  eq. radius is sqrt(area/pi).
 
-        def get_skewness(geometry):
-            # Calculate the lengths of the sides
-            sides = [Point(geometry.exterior.coords[i]).distance(Point(geometry.exterior.coords[i-1]))
-                     for i in range(len(geometry.exterior.coords)-1)]
-            # Find the largest side length
-            largest_side_length = max(sides)
-            equivalent_radius = np.sqrt(geometry.area/np.pi)
-            if equivalent_radius == 0.:
-                return float('inf')
-            skewness = largest_side_length / equivalent_radius
-            return skewness
+        from time import time
+        start = time()
+        print("compute initial skewness", flush=True)
+        with Pool(cpu_count()) as pool:
+            tria3_gdf["skewness"] = pd.concat(
+                    pool.map(
+                        get_chunk_skewness,
+                        np.array_split(tria3_gdf.to_crs('epsg:6933').geometry, cpu_count())
+                        )
+                    ).values
+        # tria3_gdf[tria3_gdf["skewness"] >= 60.].plot(ax=plt.gca(), facecolor='r')
+        # tria3_gdf[tria3_gdf["skewness"] >= 60.].geometry.boundary.plot(ax=plt.gca(), edgecolor='k')
+        # plt.show()
 
-        def get_tria_to_fix(msh_t):
-            tria3_gdf = utils.get_msh_t_tria3_Polygon_gdf(msh_t)
-
-            tria3_gdf['skewness'] = tria3_gdf.to_crs('epsg:6933').geometry.map(get_skewness)
-
-            tria_with_high_skewness = tria3_gdf[tria3_gdf['skewness'] > 60.]
+        print(f"compute initial skewness took: {time()-start}", flush=True)
+        current_count = float("inf")
+        while np.any(tria3_gdf['skewness'] > 60.):
+            tria_with_high_skewness = tria3_gdf[tria3_gdf['skewness'] > 60.].copy().to_crs('epsg:6933')
+        #     if len(tria_with_high_skewness) == current_count:
+        #         break
+            current_count = len(tria_with_high_skewness)
+            # print(f"{current_count=}", flush=True)
+            # with Pool(cpu_count()) as pool:
+            #     tria_with_high_skewness.geometry = pool.starmap(cls._get_buffered_geom, [(geom, 1.) for geom in tria_with_high_skewness.geometry])
 
             # Perform spatial join to find all triangles that touch the ones with high skewness
+            start = time()
+            print("tria_to_fix compute", flush=True)
             tria_to_fix = gpd.sjoin(
-                tria3_gdf,
+                tria3_gdf.to_crs('epsg:6933'),
                 tria_with_high_skewness,
-                how='inner',  # Use inner join to get only the matching rows
-                predicate='touches'
+                how='inner',
+                predicate='intersects'
             )
-
-            # Combine indices from both conditions and select rows from original DataFrame
-            result = tria3_gdf.loc[
+            print(f"tria_to_fix compute: {time()-start}", flush=True)
+        #     # Combine indices from both conditions and select rows from original DataFrame
+            tria_to_fix = tria3_gdf.loc[
                 tria_to_fix.index.union(tria_with_high_skewness.index)
             ]
 
-            return result
+            tria3_gdf = tria3_gdf.drop(index=tria_to_fix.index.unique())
 
-        utils.remove_flat_triangles(msh_t)
-        tria_to_fix = get_tria_to_fix(msh_t)
+            start = time()
+            mps_to_triangulate = tria_to_fix.unary_union
+            print(f"mps to triangulate took: {time()-start}", flush=True)
+            if isinstance(mps_to_triangulate, Polygon):
+                mps_to_triangulate = MultiPolygon([mps_to_triangulate])
+            breakpoint()
+            new_trias = []
+            start = time()
+            for i, poly in enumerate(mps_to_triangulate.geoms):
+                boundary = poly.boundary
+                # print(boundary)
+                boundary = simplify(boundary, np.finfo(np.float32).eps)
+                if isinstance(boundary, LineString):
+                    new_trias.extend(cls._get_new_trias(boundary))
+                elif isinstance(boundary, MultiLineString):
+                    for this_bnd in boundary.geoms:
+                        new_trias.extend(cls._get_new_trias(this_bnd))
+                else:
+                    raise NotImplementedError(f"{type(boundary)=}\n{boundary=}")
+                # elif isinstance(boundary, MultiLineString):
 
-        self._remove_invalid_triangles_from_msh_t(msh_t, tria_to_fix)
-        self._append_new_tris_gdf_to_msh_t(self._get_new_tris_gdf(tria_to_fix), msh_t)
-        # remove any remaining tri with high skewness
-        tria3_gdf = utils.get_msh_t_tria3_Polygon_gdf(msh_t)
-        tria3_gdf['skewness'] = tria3_gdf.to_crs('epsg:6933').geometry.map(get_skewness)
-        tria_with_high_skewness = tria3_gdf[tria3_gdf['skewness'] > 60.]
-        self._remove_invalid_triangles_from_msh_t(msh_t, tria_with_high_skewness)
-        self._remove_self_intersections(msh_t)
+                # if hasattr(boundary, "geoms"):
+                #     print(type(boundary))
+                #     raise
+                # coords = max(boundary.geoms, key=lambda bnd: bnd.length).coords
+        #     print(f"building new trias took: {time()-start}", flush=True)
+        #     new_gdf = gpd.GeoDataFrame(geometry=new_trias, crs=tria3_gdf.crs)
+        #     # new_gdf = new_gdf[new_gdf.to_crs("epsg:6933").geometry.area >= 1.]
+        #     start = time()
+        #     with Pool(cpu_count()) as pool:
+        #         new_gdf["skewness"] = pool.map(get_skewness, new_gdf.to_crs("epsg:6933").geometry)
+        #     print(f"computing new skewness took: {time()-start}", flush=True)
+
+        #     start = time()
+        #     tria3_gdf = pd.concat([tria3_gdf, new_gdf], ignore_index=True)
+        #     print(f"concat took: {time()-start}", flush=True)
+        # # tria_to_fix = tria3_gdf.loc[
+        # #     tria_to_fix.index.union(tria_with_high_skewness.index)
+        # # ]
+
+        # # tria3_gdf = tria3_gdf.drop(index=tria_with_high_skewness.index.unique())
+        # print("start plus minus buffer")
+        # start = time()
+        # # tria3_gdf = tria3_gdf[tria3_gdf.to_crs("epsg:6933").geometry.area >= 1.]
+        # tria3_gdf_plus_buffered = tria3_gdf.copy()
+        # tria3_gdf_minus_buffered = tria3_gdf.copy()
+        # with Pool(cpu_count()) as pool:
+        #     tria3_gdf_plus_buffered.geometry = pool.starmap(cls._get_buffered_geom, [(geom, 2*np.finfo(np.float32).eps) for geom in tria3_gdf.geometry])
+        #     tria3_gdf_minus_buffered.geometry = pool.starmap(cls._get_buffered_geom, [(geom, -2*np.finfo(np.float32).eps) for geom in tria3_gdf.geometry])
+        # print(f"plus minus buffer took {time() - start} ", flush=True)
+        # print("start final sjoin")
+        # start = time()
+        # joined = gpd.sjoin(
+        #     tria3_gdf_minus_buffered,
+        #     tria3_gdf_plus_buffered,
+        #     how='inner',
+        #     predicate='within'
+        # )
+        # print(f"final sjoin took: {time()-start}", flush=True)
+        # joined = joined[joined.index != joined.index_right]
+
+        # indices_to_drop = joined.index.unique()
+        # del tria3_gdf_minus_buffered
+        # del tria3_gdf_plus_buffered
+
+        # joined = gpd.sjoin(
+        #     tria3_gdf,
+        #     tria3_gdf,
+        #     how='inner',
+        #     predicate='overlaps'
+        # )
+        # joined = joined[joined.index != joined.index_right].reset_index(drop=False)
+        # # Step 1: Find indices with more than one overlap
+        # overlap_count = joined.index.value_counts()
+        # indices_more_than_one_overlap = overlap_count[overlap_count > 1].index.tolist()
+
+        # # # Step 2: Find the item that's within the other for one-to-one overlaps
+        # one_to_one_overlaps = joined[joined.index.value_counts() == 1]
+        # indices_to_drop_for_one_to_one = []
+
+        # for idx, row in one_to_one_overlaps.iterrows():
+        #     rows = tria3_gdf.loc[[idx]].within(tria3_gdf.loc[[row.index_right]])
+        #     if len(rows) > 0:
+        #         indices_to_drop_for_one_to_one.extend(rows.index.tolist())
+        #     # elif tria3_gdf.loc[row.index_right].within(tria3_gdf.loc[idx]):
+        #     else:
+        #         indices_to_drop_for_one_to_one.append(row.index_right)
+
+        # # Combine both lists of indices to drop
+        # indices_to_drop = set(indices_more_than_one_overlap + indices_to_drop_for_one_to_one)
+
+        # # Drop these indices from the GeoDataFrame
+        # tria3_gdf.drop(index=list(indices_to_drop.union(joined.index.unique())), inplace=True)
+        # from shapely.ops import orient
+        # tria3_gdf['geometry'] = tria3_gdf['geometry'].apply(lambda x: orient(x, sign=1))
+        # print("returning from skewness tolerance fix", flush=True)
+        # return tria3_gdf
+        # tria3_gdf.plot(ax=plt.gca(), facecolor='r', edgecolor='k')
+        # plt.show(block=True)
+        # print("here")
+
+        # breakpoint()
+
+        # self._remove_invalid_triangles_from_msh_t(msh_t, tria_to_fix)
+        # self._append_new_tris_gdf_to_msh_t(self._get_new_tris_gdf(tria_to_fix), msh_t)
+        # # remove any remaining tri with high skewness
+        # tria3_gdf = utils.get_msh_t_tria3_Polygon_gdf(msh_t)
+        # tria3_gdf['skewness'] = tria3_gdf.to_crs('epsg:6933').geometry.map(get_skewness)
+        # tria_with_high_skewness = tria3_gdf[tria3_gdf['skewness'] > 60.]
+        # self._remove_invalid_triangles_from_msh_t(msh_t, tria_with_high_skewness)
+        # self._remove_self_intersections(msh_t)
         # utils.remove_flat_triangles(msh_t)
 
         # verification
@@ -4159,8 +4790,23 @@ class Quads:
             raster_opts=None,
             window=None,
             pad_width=None,
+            lower_bound=None,
+            upper_bound=None,
             **kwargs
             ):
+        if zmin is None and zmax is None:
+            return cls.from_mp(
+                    *get_thalwegs_multipolygon_for_raster(
+                        raster,
+                        raster_opts=raster_opts,
+                        window=window,
+                        pad_width=pad_width,
+                        lower_bound=lower_bound,
+                        upper_bound=upper_bound,
+                        threshold_size=kwargs.get("threshold_size", None)
+                        ),
+                    **kwargs
+                    )
         return cls.from_mp(
                 *get_multipolygon_for_raster(
                     raster,
@@ -4173,19 +4819,25 @@ class Quads:
                 **kwargs
                 )
 
-    @staticmethod
-    def _get_skewness(geometry):
 
-        # Calculate the lengths of the sides
-        sides = [Point(geometry.exterior.coords[i]).distance(Point(geometry.exterior.coords[i-1]))
-                 for i in range(len(geometry.exterior.coords)-1)]
-        # Find the largest side length
-        largest_side_length = max(sides)
-        equivalent_radius = np.sqrt(geometry.area/np.pi)
-        if equivalent_radius == 0.:
-            return float('inf')
-        skewness = largest_side_length / equivalent_radius
-        return skewness
+    # @classmethod
+    # def thalwegs_from_raster(
+    #     cls,
+    #     raster: Union[Path, 'Raster'],
+    #     raster_opts=None,
+    #     window=None,
+    #     pad_width=None,
+    #     **kwargs
+    #     ):
+    #     return cls.from_mp(
+    #             *get_thalwegs_multipolygon_for_raster(
+    #                 raster,
+    #                 raster_opts=raster_opts,
+    #                 window=window,
+    #                 pad_width=pad_width,
+    #                 ),
+    #             **kwargs
+    #             )
 
     @classmethod
     def from_mp(cls, mp, mp_crs, **kwargs):
@@ -4276,6 +4928,34 @@ class Quads:
         pool.join()
         return quads_poly_gdf_uu
 
+
+def get_side_lengths(polygon):
+    num_coords = len(polygon.exterior.coords) - 1
+    sides = [Point(polygon.exterior.coords[i]).distance(Point(polygon.exterior.coords[i+1]))
+             for i in range(num_coords)]
+    # print(sides, flush=True)
+    return sides
+
+
+def get_skewness(geometry):
+    sides = get_side_lengths(geometry)
+    # Calculate the lengths of the sides
+    # Find the largest side length
+    # largest_side_length = max(sides)
+    # min_side_length = min(sides)
+    # if min_side_length < 1.:
+    #     return float('inf')
+    equivalent_radius = np.sqrt(geometry.area/np.pi)
+    if equivalent_radius == 0.:
+        return float('inf')
+    return max(sides) / equivalent_radius
+    # return skewness
+
+def get_chunk_skewness(chunk):
+    # output = chunk.copy().to_frame()
+    # output.drop(columns="geometry", inplace=True)
+    return chunk.geometry.map(lambda x: get_skewness(x))
+    # return output
 
 def get_msh_t_poly(msh_t_pickle_path, quads_poly_gdf_uu_tmpfile, tria_index):
     import pickle
@@ -4405,15 +5085,15 @@ def balanced_chunking(output_feathers, chunk_size):
     n = len(output_feathers)
     base_size = n // chunk_size  # Base size of each chunk
     remainder = n % chunk_size   # Remaining elements to be distributed
-    
+
     chunks = []
     start = 0  # Starting index for each chunk
-    
+
     for i in range(chunk_size):
         end = start + base_size + (1 if i < remainder else 0)  # Add 1 to the size for the first 'remainder' chunks
         chunks.append(output_feathers[start:end])
         start = end  # Update the starting index for the next iteration
-    
+
     return chunks
 
 
@@ -4505,7 +5185,7 @@ def generate_quads_gdf_from_banks_file_mpi(
     # import dask_geopandas as dgpd
 
     # from dask.distributed import LocalCluster, Client
-    
+
     # if comm.Get_rank() == 0:
     #     # import socket
     #     # cluster = LocalCluster(n_workers=32, host=socket.gethostname())
@@ -4569,8 +5249,9 @@ def generate_quads_gdf_from_triplets_file_mpi(
         # previous: Quads = None,
         **kwargs
         ) -> List[List[LinearRing]]:
-    from mpi4py.futures import MPICommExecutor
     from functools import partial
+
+    from mpi4py.futures import MPICommExecutor
     triplets_gdf = gpd.read_file(triplets_file)
     with MPICommExecutor(comm) as executor:
         if executor is not None:
@@ -4601,11 +5282,11 @@ def create_polygon_from_disjoint_linestrings(line1, line2):
 
     start1, end1 = coords1[0], coords1[-1]
     start2, end2 = coords2[0], coords2[-1]
-    
+
     # Find the closest pair of endpoints between the two LineStrings
     pairs = [(start1, start2), (start1, end2), (end1, start2), (end1, end2)]
     closest_pair = min(pairs, key=lambda pair: LineString(pair).length)
-    
+
     # Create the connecting segments based on the closest pair
     connect1 = LineString([closest_pair[0], closest_pair[1]])
 
@@ -4616,7 +5297,7 @@ def create_polygon_from_disjoint_linestrings(line1, line2):
     # Create the Polygon by combining both LineStrings and connecting segments
     ring_coords = list(line1.coords) + list(connect1.coords)[1:] + list(line2.coords)[::-1] + list(connect2.coords)[1:] + [line1.coords[0]]
     polygon = Polygon(ring_coords)
-    
+
     return polygon
 
 
@@ -4646,7 +5327,7 @@ def compute_quads_from_banks(
         # Calculate vectors u and v
         u = np.array(p2) - np.array(p1)
         v = np.array(p4) - np.array(p3)
-        
+
         # Normalize to get unit vectors
         u_hat = unit_vector(u)
         v_hat = unit_vector(v)
@@ -4659,7 +5340,7 @@ def compute_quads_from_banks(
 
         quad = LinearRing([p1, p4, p3, p2, p1])
         quads_coll.append((quad, b_hat))
-        
+
 
     return split_base_quads(quads_coll, min_quad_width, max_quad_width, min_cross_section_node_count)
 
@@ -4870,10 +5551,11 @@ def generate_quad_gdf_from_mp(
         simplify_tolerance=None,
         interpolation_distance=None,
         min_area_to_length_ratio=0.1,
-        min_area=np.finfo(np.float64).min,
+        min_area=np.finfo(np.float32).eps,
         min_cross_section_node_count=4,
         max_quad_width=None,
         min_quad_width=None,
+        min_quads_per_group: Union[int | None] = None,
         previous: Quads = None,
         nprocs=cpu_count(),
         ) -> gpd.GeoDataFrame:
@@ -4917,7 +5599,7 @@ def generate_quad_gdf_from_mp(
 
     if resample_distance is not None:
         final_patches = [resample_polygon(patch, resample_distance) for patch in final_patches]
-    
+
     # verify before area and ratio filter
     # print(len(final_patches), min_area, min_area_to_length_ratio, simplify_tolerance)
     # gpd.GeoDataFrame(geometry=final_patches, crs=local_crs).plot(ax=plt.gca(), facecolor='none')
@@ -5089,7 +5771,7 @@ def generate_quad_gdf_from_mp(
     #     quads_gdf = pool.starmap(get_quad_group_data, job_args)
     quads_gdf = list(map(lambda args: get_quad_group_data(*args), job_args))
     quads_gdf = [item for sublist in quads_gdf for item in sublist if len(item) > 0]
-    print(f"computing quad_groups took: {time()-start}", flush=True)
+    logger.debug(f"computing quad_groups took: {time()-start}")
     if len(quads_gdf) == 0:
         return gpd.GeoDataFrame(
                 columns=[
@@ -5104,8 +5786,24 @@ def generate_quad_gdf_from_mp(
     quads_gdf = gpd.GeoDataFrame(quads_gdf, crs=local_azimuthal_projection)
     quads_gdf = quads_gdf[~quads_gdf.geometry.is_empty]
     quads_gdf = quads_gdf[quads_gdf.geometry.is_valid]
+    quads_gdf["area"] = quads_gdf.geometry.map(Polygon).area
+    quads_gdf = quads_gdf[quads_gdf["area"] >= 2]
+    quads_gdf.drop(columns=["area"], inplace=True)
+
+
+    def final_skewness_is_acceptable(geometry) -> bool:
+        trias = ops.triangulate(geometry)
+        return np.all([get_skewness(tria) < 60. for tria in trias])
+
+
+    quads_gdf["skewness_is_within_range"] = quads_gdf.geometry.map(final_skewness_is_acceptable)
+    quads_gdf = quads_gdf[quads_gdf["skewness_is_within_range"] == True]
+    quads_gdf.drop(columns=["skewness_is_within_range"], inplace=True)
+
+
     # make sure we keep only the unique
-    quads_gdf.drop_duplicates(subset='geometry', keep=False, inplace=True)
+    quads_gdf.drop_duplicates(subset='geometry', keep="first", inplace=True)
+    quads_gdf = quads_gdf.reset_index(drop=True)
 
     # verify
     # import contextily as cx
@@ -5138,6 +5836,24 @@ def generate_quad_gdf_from_mp(
         quads_gdf = pd.concat([quads_gdf, previous_gdf.to_crs(quads_gdf.crs)], ignore_index=True)
         cleanup_quads_gdf_mut(quads_gdf)
 
+    if min_quads_per_group:
+        counts = quads_gdf.groupby('quad_group_id').size()
+        quads_gdf = quads_gdf[quads_gdf['quad_group_id'].isin(counts[counts >= min_quads_per_group].index)]
+        # renumber the id's so that they are continuous
+        # Get the unique remaining group ids
+        unique_ids = quads_gdf['quad_group_id'].unique()
+
+        # Sort them and generate a new consecutive range
+        unique_ids.sort()
+        new_ids = range(1, len(unique_ids)+1)
+
+        # Map old ids to new ids in a dictionary
+        id_map = dict(zip(unique_ids, new_ids))
+
+        # Replace old ids with new ids
+        quads_gdf['quad_group_id'] = quads_gdf['quad_group_id'].map(id_map)
+
+
     # verify
     # import contextily as cx
     # quads_gdf.plot(ax=plt.gca())
@@ -5152,6 +5868,7 @@ def generate_quad_gdf_from_mp(
 
 def check_conforming(polygon_left, polygon_right) -> bool:
     from shapely import equals_exact
+
     # from shapely.geometry import Point
     # polygon_right = mesh_gdf.loc[row.index_right].geometry
     # quad = row.geometry
@@ -5189,7 +5906,7 @@ def cleanup_touches_with_eps_tolerance_mut(quads_gdf):
     def get_intersecting_pairs(gdf):
         # Use 'intersects' predicate and filter pairs with different 'quad_group_id'
         intersects = gpd.sjoin(gdf, gdf, how='inner', predicate='intersects')
-        return intersects[(intersects.index != intersects.index_right) & 
+        return intersects[(intersects.index != intersects.index_right) &
                           (intersects['quad_group_id_left'] != intersects['quad_group_id_right'])]
 
     intersecting_pairs = get_intersecting_pairs(quads_gdf)
@@ -5319,7 +6036,7 @@ def cleanup_quads_gdf_mut(quads_gdf):
     #     return intersection_gdf
 
     # def custom_group(df):
-    #     # Building the graph                                                        
+    #     # Building the graph
     #     graph = {}
     #     for idx, row in df.iterrows():
     #         graph[idx] = graph.get(idx, []) + [row['quad_id_left']]
@@ -5343,6 +6060,7 @@ def cleanup_quads_gdf_mut(quads_gdf):
 
 def test_quadgen_on_messy_tile():
     from appdirs import user_data_dir
+
     from geomesh import Raster
     rootdir = user_data_dir('geomesh')
     raster = Raster(
@@ -5380,6 +6098,7 @@ def test_quadgen_on_messy_tile():
     plt.show(block=True)
 def test_quadgen_for_Boqueron():
     from appdirs import user_data_dir
+
     from geomesh import Raster
     rootdir = user_data_dir('geomesh')
     raster = Raster(
@@ -5413,7 +6132,8 @@ def test_quadgen_for_Boqueron():
 
 def test_quadgen_for_tile_that_takes_too_long_and_needs_to_be_debugged():
     from appdirs import user_data_dir
-    from geomesh import Geom, Hfun, Raster, JigsawDriver
+
+    from geomesh import Geom, Hfun, JigsawDriver, Raster
     rootdir = user_data_dir('geomesh')
     raster = Raster(
             f'{rootdir}/raster_cache/chs.coast.noaa.gov/htdata/'
@@ -5443,16 +6163,21 @@ def test_quadgen_for_tile_that_takes_too_long_and_needs_to_be_debugged():
 def test_quadgen_for_Harlem_River():
     import pickle
     from pathlib import Path
-    from geomesh import Geom, Hfun, Raster, JigsawDriver
+
     import matplotlib.pyplot as plt
     from appdirs import user_data_dir
+
+    from geomesh import Geom, Hfun, JigsawDriver, Raster
 
     rootdir = user_data_dir('geomesh')
     raster = Raster(
             f'{rootdir}/raster_cache/chs.coast.noaa.gov/htdata/'
             'raster2/elevation/NCEI_ninth_Topobathy_2014_8483/'
+            # "northeast_sandy/ncei19_n39x75_w075x75_2014v1.tif"
             'northeast_sandy/ncei19_n41x00_w074x00_2015v1.tif',
             )
+    raster.resampling_factor = 0.2
+    Path("the_quads.pkl").unlink(missing_ok=True)
     if Path("the_quads.pkl").is_file():
         quads = pickle.load(open("the_quads.pkl", "rb"))
     else:
@@ -5472,6 +6197,18 @@ def test_quadgen_for_Harlem_River():
                                 # min_quad_length=10.,
                                 max_quad_length=500.,
                                 resample_distance=100.,
+                                # zmin=0.,
+                                zmax=0.,
+                                max_quad_width=500.,
+                                # min_quad_width=10.,
+                                previous=quads,
+                                )
+        quads = Quads.from_raster(
+                                raster,
+                                threshold_size=1500.,
+                                # min_quad_length=10.,
+                                max_quad_length=500.,
+                                resample_distance=100.,
                                 zmin=0.,
                                 zmax=10.,
                                 max_quad_width=500.,
@@ -5482,6 +6219,7 @@ def test_quadgen_for_Harlem_River():
     # verification
     # quads.plot(ax=plt.gca(), facecolor='none')
     # plt.show(block=True)
+    # raise
     raster.resampling_factor = 0.2
     # Path("the_old_msh_t.pkl").unlink(missing_ok=True)
     if Path("the_old_msh_t.pkl").is_file():
@@ -5590,7 +6328,6 @@ def test_quadgen_for_Harlem_River():
     # final_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
     # plt.show(block=False)
     # breakpoint()
-    from geomesh.cli.mpi.hgrid_build import interpolate_raster_to_mesh
     raster.resampling_factor = None
     new_msh_t.value = np.full((new_msh_t.vert2['coord'].shape[0], 1), np.nan)
     from time import time
@@ -5656,3 +6393,621 @@ def test_quadgen_for_Harlem_River():
     the_mesh.write('test_with_schism/test_output.grd', overwrite=True)
     print('done writting test file')
     breakpoint()
+
+def interpolate_raster_to_mesh(
+        msh_t,
+        raster,
+        ):
+
+    from scipy.interpolate import (NearestNDInterpolator,
+                                   RegularGridInterpolator)
+    coords = np.array(msh_t.vert2['coord'])
+    coords_crs = msh_t.crs
+    idxs = []
+    values = []
+    for xi, yi, zi in raster:
+        zi = zi[0, :]
+        vert2_idxs = np.where(
+            np.logical_and(
+                np.logical_and(np.min(xi) <= coords[:, 0], np.max(xi) >= coords[:, 0]),
+                np.logical_and(np.min(yi) <= coords[:, 1], np.max(yi) >= coords[:, 1]),
+            )
+        )[0]
+        coords = coords[vert2_idxs, :]
+        if not raster.crs.equals(coords_crs):
+            transformer = Transformer.from_crs(coords_crs, raster.crs, always_xy=True)
+            coords[:, 0], coords[:, 1] = transformer.transform(coords[:, 0], coords[:, 1])
+        _values = RegularGridInterpolator(
+                (xi, yi),
+                zi.T.astype(np.float64),
+                'linear',
+                bounds_error=False,
+                fill_value=np.nan
+                )(coords)
+        nan_idxs = np.where(np.isnan(_values))
+        non_nan_idxs = np.where(~np.isnan(_values))
+        # start = time()
+        _values[nan_idxs] = NearestNDInterpolator(
+                # xyzo[non_nan_idxs],
+                coords[non_nan_idxs],
+                _values[non_nan_idxs],
+                )(coords[nan_idxs, :])
+        idxs.append(vert2_idxs)
+        values.append(_values)
+    if len(idxs) == 0:
+        return (np.array([]), np.array([]))
+    values = np.hstack(values)
+    idxs, values = np.hstack(idxs), values
+    values = values.reshape((values.size, 1))
+    return idxs, values
+
+def test_thalweg_detection():
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import rasterio
+    import scipy.ndimage
+    from appdirs import user_data_dir
+
+    rootdir = user_data_dir('geomesh')
+    raster_path = f'{rootdir}/raster_cache/chs.coast.noaa.gov/htdata/' \
+            'raster2/elevation/NCEI_ninth_Topobathy_2014_8483/' \
+            "northeast_sandy/ncei19_n39x75_w075x75_2014v1.tif"
+            # "chesapeake_bay/ncei19_n39x25_w076x50_2019v1.tif"
+
+
+
+    from rasterio.transform import array_bounds
+    with rasterio.open(raster_path) as src:
+        bathymetry = src.read(1)
+        window = src.window(*src.bounds)
+        crs = src.crs
+        transform = src.transform
+        height = int(window.height)
+        width = int(window.width)
+        x0, y0, x1, y1 = array_bounds(
+            height,
+            width,
+            rasterio.windows.transform(window, src.transform)
+        )
+        xvals = np.linspace(x0, x1, int(window.height))
+        yvals = np.linspace(y1, y0, int(window.width))
+    if crs.is_geographic:
+        logger.debug(
+            "CRS is geographic, transforming points to local projection."
+        )
+        local_azimuthal_projection = "+proj=aeqd +R=6371000 +units=m "\
+            f"+lat_0={np.median(yvals)} +lon_0={np.median(xvals)}"
+        local_crs = CRS.from_user_input(local_azimuthal_projection)
+        transformer = Transformer.from_crs(crs, local_crs, always_xy=True)
+        geographic_to_local = transformer.transform
+        x0, x1 = np.min(xvals), np.max(xvals)
+        y0, y1 = np.min(yvals), np.max(yvals)
+        (x0, x1), (y0, y1) = geographic_to_local([x0, x1], [y0, y1])
+        dx = np.diff(np.linspace(x0, x1, int(window.width)))[0]
+        dy = np.diff(np.linspace(y0, y1, int(window.height)))[0]
+    else:
+        dx = np.diff(xvals)[0]
+        dy = np.diff(yvals)[0]
+        # crs = local_crs
+
+    from scipy.ndimage import binary_erosion
+    logger.debug("Loading bathymetry values from raster.")
+    # bathymetry = self.raster.get_values(band=1, window=window)
+    # bathymetry = self.raster.get_values(band=1, window=window)
+    bathymetry[bathymetry > 0.] = np.nan
+    dzdx, dzdy = np.gradient(bathymetry, dx, dy)
+    mask = np.logical_and(np.abs(dzdx) < 0.1, np.abs(dzdy) < 0.1)
+    bathy = bathymetry.copy()
+    non_saddle_values = bathymetry.copy()
+    non_saddle_values[mask] = np.nan
+    bathy[~mask] = np.nan
+    bathy[bathy > np.nanmean(non_saddle_values)] = np.nan
+    binary_image = bathymetry.copy()
+    binary_image[~np.isnan(bathy)] = 1
+    binary_image[np.isnan(bathy)] = -1
+    plt.contourf(xvals, yvals, binary_image, levels=[0, 1])
+    # plt.imshow(bathymetry, cmap='viridis', origin='lower', interpolation='nearest')
+    # plt.scatter(saddle_points[1], saddle_points[0], color='red', marker='x', label='Saddle Points')
+    # gpd.GeoDataFrame(geometry=gpd.points_from_xy(saddle_x, saddle_y), crs=crs).plot(ax=plt.gca())
+    # plt.colorbar(label='Bathymetry')
+    # plt.xlabel('X-axis')
+    # plt.ylabel('Y-axis')
+    # plt.title('Bathymetry and Saddle Points')
+    # plt.legend()
+    plt.show()
+    raise
+
+
+    with warnings.catch_warnings():
+        # in case self._src.values is a masked array
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        dh = np.sqrt(dx ** 2 + dy ** 2)
+    dh = np.ma.masked_equal(dh, 0.0)
+
+    from skimage.morphology import skeletonize
+    threshold_value = 0.05
+
+    # Apply thresholding
+    binary_image = dh > threshold_value
+
+    # Apply binary erosion to further refine the delineation
+    eroded_image = binary_erosion(binary_image)
+
+
+    # Skeletonize the binary image to get the centerline
+    from scipy.spatial import Voronoi, voronoi_plot_2d
+    skeleton = skeletonize(eroded_image)
+    skeleton_iy, skeleton_ix = np.nonzero(skeleton)[1], np.nonzero(skeleton)[0]
+    skeleton_x, skeleton_y = rasterio.transform.xy(transform, skeleton_ix, skeleton_iy)
+    points = np.column_stack((skeleton_x, skeleton_y))
+    # desired_distance = .0001
+    # from simplification.cutil import simplify_coords
+# Downsample the points using the simplify_coords function
+    # points = simplify_coords(points, desired_distance)
+    # vor = Voronoi(points)
+    # edges = vor.ridge_vertices
+    # lines = []
+    # for edge in edges:
+    #     p1_x, p1_y = vor.vertices[edge[0]]
+    #     p2_x, p2_y = vor.vertices[edge[1]]
+    #         # Convert point coordinates to pixel coordinates
+    #     p1_ix, p1_iy = ~transform * (p1_x, p1_y)
+    #     p2_ix, p2_iy = ~transform * (p2_x, p2_y)
+
+    #     # Check if the point is within the bounds of the raster
+    #     if 0 <= p1_ix < width and 0 <= p1_iy < height:
+    #         if 0 <= p2_ix < width and 0 <= p2_iy < height:
+    #             p1_z = bathymetry[int(p1_iy), int(p1_ix)]
+    #             p2_z = bathymetry[int(p1_iy), int(p1_ix)]
+    #             if np.any([np.isclose(p1_z, 0), np.isclose(p2_z, 0.)]):
+    #                 continue
+    #             custom_atol = 1e-5
+    #             custom_rtol = 1e-5
+    #             if np.isclose(p1_z, p2_z, atol=custom_atol, rtol=custom_rtol):
+    #                 line = LineString([(p1_x, p1_y), (p2_x, p2_y)])
+
+    #                 lines.append(line)
+
+    #         # try:
+    #         #     p1_in_skel = skeleton[int(p1_iy), int(p1_ix)] == 0
+    #         #     p2_in_skel = skeleton[int(p2_iy), int(p2_ix)] == 0
+    #         # except IndexError:
+    #         #     continue
+    #         # if p1_in_skel and p2_in_skel:
+    #         #     p1_z = bathymetry[p1_ix, p1_iy]
+    #         #     p2_z = bathymetry[p1_ix, p1_iy]
+    #         #     p1_x, p1_y = rasterio.transform.xy(transform, p1_ix, p1_iy)
+    #         #     p2_x, p2_y = rasterio.transform.xy(transform, p2_ix, p2_iy)
+    #         #     line = LineString([(p1_x, p1_y), (p2_x, p2_y)])
+    #         #     lines.append(line)
+    # plt.gca().imshow(skeleton, cmap='gray', extent=[xvals.min(), xvals.max(), yvals.min(), yvals.max()])
+    plt.gca().imshow(bathymetry, cmap='gray', extent=[xvals.min(), xvals.max(), yvals.min(), yvals.max()])
+    # gpd.GeoDataFrame(geometry=lines, crs=crs).plot(ax=plt.gca())
+    gpd.GeoDataFrame(geometry=[Point(x) for x in points], crs=crs).plot(ax=plt.gca())
+    plt.show()
+    raise
+
+# # Dilate the thalweg region to create polygons representing the thalwegs
+#     dilated_thalwegs = []
+
+#     for region in vor.regions:
+#         if not -1 in region and len(region) > 0:
+#             # Extract the vertices of the Voronoi region
+#             vertices = [vor.vertices[i] for i in region]
+
+#             # Create a Polygon from the vertices
+#             thalweg_polygon = Polygon(vertices)
+
+#             # Dilate the thalweg polygon (replace this with your dilation logic)
+#             dilated_thalweg = thalweg_polygon.buffer(1.0)
+
+#             dilated_thalwegs.append(dilated_thalweg)
+
+# # Identify edges not intersecting with dilated thalwegs
+#     thalweg_edges = [edge for edge in voronoi_edges if not any(edge.intersects(dilated_thalweg) for dilated_thalweg in dilated_thalwegs)]
+
+# Visualize the results
+    plt.figure(figsize=(12, 4))
+
+    plt.subplot(1, 3, 1)
+    plt.imshow(bathymetry, cmap='viridis')
+    plt.title('Bathymetry')
+
+    plt.subplot(1, 3, 2)
+    plt.plot(skeleton_x, skeleton_y, 'ro', label='Skeleton Points')
+    plt.title('Skeleton Points')
+    plt.legend()
+
+    plt.subplot(1, 3, 3)
+    plt.imshow(bathymetry, cmap='viridis')
+    plt.plot(skeleton_x, skeleton_y, 'ro', label='Skeleton Points')
+    plt.title('Voronoi Diagram')
+    voronoi_plot_2d(vor, show_vertices=False, line_colors='k', line_width=2, line_alpha=0.6)
+
+    for edge in thalweg_edges:
+        plt.plot(*edge.xy, color='r', linewidth=2)
+
+    plt.legend()
+
+    plt.show()
+
+
+
+
+#     # Dilate the thalweg region to create polygons representing the thalwegs
+#     dilated_thalwegs = [Polygon(zip(*np.transpose(region))) for region in vor.regions if not -1 in region and len(region) > 0]
+
+# # Collect all Voronoi edges
+#     voronoi_edges = []
+
+#     for region in vor.regions:
+#         if not -1 in region and len(region) > 0:
+#             # Extract the vertices of the Voronoi region
+#             vertices = [vor.vertices[i] for i in region]
+
+#             # Create LineStrings from consecutive pairs of vertices
+#             edges = [LineString([vertices[i], vertices[i + 1]]) for i in range(len(vertices) - 1)]
+
+#             voronoi_edges.extend(edges)
+
+# # Identify edges not intersecting with dilated thalwegs
+#     thalweg_edges = [edge for edge in voronoi_edges if not any(edge.intersects(dilated_thalweg) for dilated_thalweg in dilated_thalwegs)]
+
+# # Visualize the results
+#     plt.figure(figsize=(12, 4))
+
+#     plt.subplot(1, 3, 1)
+#     plt.imshow(bathymetry, cmap='viridis')
+#     plt.title('Bathymetry')
+
+#     plt.subplot(1, 3, 2)
+#     plt.plot(skeleton_x, skeleton_y, 'ro', label='Skeleton Points')
+#     plt.title('Skeleton Points')
+#     plt.legend()
+
+#     plt.subplot(1, 3, 3)
+#     plt.imshow(bathymetry, cmap='viridis')
+#     plt.plot(skeleton_x, skeleton_y, 'ro', label='Skeleton Points')
+#     plt.title('Voronoi Diagram')
+#     voronoi_plot_2d(vor, show_vertices=False, line_colors='k', line_width=2, line_alpha=0.6)
+
+#     for edge in thalweg_edges:
+#         plt.plot(*edge.xy, color='r', linewidth=2)
+
+#     plt.legend()
+
+#     plt.show()
+# # Visualize the results
+#     plt.figure(figsize=(12, 4))
+
+#     plt.subplot(1, 3, 1)
+#     plt.imshow(bathymetry, cmap='viridis')
+#     plt.title('Bathymetry')
+
+#     plt.subplot(1, 3, 2)
+#     plt.plot(skeleton_x, skeleton_y, 'ro', label='Skeleton Points')
+#     plt.title('Skeleton Points')
+#     plt.legend()
+
+# # Compute the Voronoi diagram
+#     points = np.column_stack((skeleton_x, skeleton_y))
+#     vor = Voronoi(points)
+
+# # Visualize the Voronoi diagram
+#     plt.subplot(1, 3, 3)
+#     plt.imshow(bathymetry, cmap='viridis')
+#     plt.plot(skeleton_x, skeleton_y, 'ro', label='Skeleton Points')
+#     plt.title('Voronoi Diagram')
+#     voronoi_plot_2d(vor, show_vertices=False, line_colors='k', line_width=2, line_alpha=0.6)
+#     plt.legend()
+
+#     plt.show()
+
+    # # Visualize the results
+    # plt.figure(figsize=(12, 4))
+
+    # plt.subplot(1, 3, 1)
+    # plt.imshow(bathymetry, cmap='viridis')
+    # plt.title('Bathymetry')
+
+    # plt.subplot(1, 3, 2)
+    # plt.imshow(dh, cmap='viridis')
+    # plt.title('Gradient Magnitude')
+
+    # plt.subplot(1, 3, 3)
+    # plt.imshow(eroded_image, cmap='gray')
+    # plt.plot(np.nonzero(skeleton)[1], np.nonzero(skeleton)[0], 'r.', markersize=2, label='Centerline')
+    # plt.title('Delineated Thalwegs with Centerline')
+    # plt.legend()
+
+    # plt.show()
+
+
+# # Distance transform to assign each pixel a distance value from the background
+#     distance_transform = distance_transform_edt(eroded_image)
+
+# # Find the pixels with maximum distance values (likely the centerline)
+#     # centerline = np.where(distance_transform == distance_transform.max())
+
+# # Visualize the results
+#     plt.figure(figsize=(12, 4))
+
+#     plt.subplot(1, 3, 1)
+#     plt.imshow(bathymetry, cmap='viridis')
+#     plt.title('Bathymetry')
+
+#     plt.subplot(1, 3, 2)
+#     plt.imshow(dh, cmap='viridis')
+#     plt.title('Gradient Magnitude')
+
+#     plt.subplot(1, 3, 3)
+#     plt.imshow(eroded_image, cmap='gray')
+#     plt.plot(np.nonzero(skeleton)[1], np.nonzero(skeleton)[0], 'r.', markersize=2, label='Centerline')
+#     plt.title('Delineated Thalwegs with Centerline')
+#     plt.legend()
+
+# #     plt.subplot(1, 3, 3)
+# #     plt.imshow(eroded_image, cmap='gray')
+# #     plt.scatter(centerline[1], centerline[0], color='red', marker='x', label='Centerline')
+# #     plt.title('Delineated Thalwegs with Centerline')
+# #     plt.legend()
+
+#     plt.show()
+
+
+# # Visualize the results
+#     plt.figure(figsize=(10, 5))
+
+#     plt.subplot(1, 3, 1)
+#     plt.imshow(bathymetry, cmap='viridis')
+#     plt.title('Bathymetry')
+
+#     plt.subplot(1, 3, 2)
+#     plt.imshow(dh, cmap='viridis')
+#     plt.title('Gradient Magnitude')
+
+#     plt.subplot(1, 3, 3)
+#     plt.imshow(eroded_image, cmap='gray')
+#     plt.title('Delineated Thalwegs')
+
+#     plt.show()
+
+    # plt.imshow(bathymetry)
+    # plt.gca().invert_yaxis()
+    # plt.title(f"{x=}, {y=}")
+    # plt.show()
+    # # # raise
+    # print(idx_xmin,
+    # # x = xvals[idx_xmin[0]]
+    # y = yvals[idx_ymin[0]]
+    # print(x, y)
+    # raise
+
+
+    # from skimage.measure import label, find_contours
+    # dh = (dh - dh.min()) / (dh.max() - dh.min())
+
+    # # labels = label(dh)
+
+    # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    # ax[0].imshow(bathymetry, cmap='gray')
+    # ax[0].set_title('DEM')
+    # # ax[1].imshow(dh, cmap='jet')
+    # ax[1].contour(dh, levels=[1.])
+    # # ax[1].set_title('Thalwegs')
+    # # plt.imshow(dh, cmap='grey')
+    # ax[1].invert_yaxis()
+    # plt.show(block=False)
+    # breakpoint()
+    # raise
+    # # mask = np.zeros_like(dh)
+    # # print(labels)
+    # # breakpoint()
+    # for i in range(1, labels.max() + 1):
+    #     mask_i = (labels == i)
+    #     contours = find_contours(labels[mask_i], 0.5)
+    #     for contour in contours:
+    #         x, y = np.where(np.logical_and(mask_i, np.logical_or(contour >= contour.min(), contour <= contour.max())))
+    #         thalweg_x = np.mean(x)
+    #         thalweg_y = np.mean(y)
+    #         plt.plot(thalweg_x, thalweg_y, 'ro')
+
+# # Visualize thalwegs
+    # plt.imshow(dh, cmap='gray')
+    # plt.gca().invert_yaxis()
+    # plt.show(block=False)
+    # breakpoint()
+    # raise
+
+
+
+    # # logger.debug("Loading hfun_values.")
+    # # multiplier = 1./3.
+    # # values = np.abs((multiplier) * (bathymetry / dh))
+    # # bathymetry[bathymetry > 0] = np.nan
+    # # values[bathymetry > 0] = np.nan
+    # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    # ax[0].imshow(bathymetry, cmap='gray')
+    # ax[0].set_title('DEM')
+    # ax[1].imshow(dh, cmap='jet')
+    # ax[1].set_title('Thalwegs')
+    # breakpoint()
+    # raise
+    # # plt.show(block=False)
+
+
+    # from pysheds.grid import Grid
+
+    # grid = Grid.from_raster(raster_path)
+    # dem = grid.read_raster(raster_path)
+    # pit_filled_dem = grid.fill_pits(dem)
+
+    # # Fill depressions in DEM
+    # flooded_dem = grid.fill_depressions(pit_filled_dem)
+
+    # # Resolve flats in DEM
+    # inflated_dem = grid.resolve_flats(flooded_dem)
+    # dirmap = (64, 128, 1, 2, 4, 8, 16, 32)
+
+    # # Compute flow directions
+    # # -------------------------------------
+    # fdir = grid.flowdir(inflated_dem, dirmap=dirmap)
+    # acc = grid.accumulation(fdir, dirmap=dirmap)
+    # # Specify pour point
+    # # x, y = -97.294, 32.737
+    # # x, y = -76.294, 32.737
+
+    # # Snap pour point to high accumulation cell
+    # x_snap, y_snap = grid.snap_to_mask(acc > 1000, (x, y))
+
+    # # Delineate the catchment
+    # catch = grid.catchment(x=x_snap, y=y_snap, fdir=fdir, dirmap=dirmap,
+    #                        xytype='coordinate')
+
+# # Crop and plot the catchment
+# # ---------------------------
+# # Clip the bounding box to the catchment
+    # grid.clip_to(catch)
+    # # clipped_catch = grid.view(catch)
+    # branches = grid.extract_river_network(fdir, acc > 50, dirmap=dirmap)
+    # import seaborn as sns
+    # # sns.set_palette('husl')
+    # fig, ax = plt.subplots(figsize=(8.5,6.5))
+
+    # # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    # # ax.pcolor(xvals, yvals, bathymetry, cmap='gray')
+    # # ax[0].set_title('DEM')
+    # # dx = (xvals[1]-xvals[0])/2.
+    # # dy = (yvals[1]-yvals[0])/2.
+    # # extent = [xvals[0]-dx, xvals[-1]+dx, yvals[0]-dy, yvals[-1]+dy]
+    # ax.imshow(bathymetry, cmap='gray', extent=[grid.bbox[0], grid.bbox[2], grid.bbox[1], grid.bbox[3]])
+    # # ax[1].set_title('Thalwegs')
+    # ax.set_xlim(grid.bbox[0], grid.bbox[2])
+    # ax.set_ylim(grid.bbox[1], grid.bbox[3])
+    # ax.set_aspect('equal')
+
+    # for branch in branches['features']:
+    #     line = np.asarray(branch['geometry']['coordinates'])
+    #     ax.plot(line[:, 0], line[:, 1])
+
+    # _ = plt.title('D8 channels', size=14)
+    # plt.show(block=False)
+    # breakpoint()
+
+    # Load DEM
+    # image = bathymetry
+    # from scipy import ndimage as ndi
+
+    # distance = ndi.distance_transform_edt(image)
+
+    # from skimage.feature import peak_local_max
+
+    # max_coords = peak_local_max(distance, labels=image,
+
+    #                             footprint=np.ones((3, 3)))
+
+    # local_maxima = np.zeros_like(image, dtype=bool)
+
+    # local_maxima[tuple(max_coords.T)] = True
+
+    # from skimage.segmentation import watershed
+    # markers = ndi.label(local_maxima)[0]
+    # labels = watershed(-distance, markers, mask=image)
+
+    # fig, axes = plt.subplots(ncols=3, figsize=(9, 3), sharex=True, sharey=True)
+    # ax = axes.ravel()
+
+    # ax[0].imshow(image, cmap=plt.cm.gray)
+    # ax[0].set_title('Overlapping objects')
+    # ax[1].imshow(-distance, cmap=plt.cm.gray)
+    # ax[1].set_title('Distances')
+    # ax[2].imshow(labels, cmap=plt.cm.nipy_spectral)
+    # ax[2].set_title('Separated objects')
+
+    # for a in ax:
+    #     a.set_axis_off()
+
+    # fig.tight_layout()
+    # plt.show()
+
+
+    # dx = np.diff(xvals)[0]
+    # dy = np.diff(yvals)[0]
+    # logger.debug("Loading bathymetry values from raster.")
+    # # bathymetry = self.raster.get_values(band=1, window=window)
+    # # bathymetry = self.raster.get_values(band=1, window=window)
+    # dx, dy = np.gradient(bathymetry, dx, dy)
+    # with warnings.catch_warnings():
+    #     # in case self._src.values is a masked array
+    #     warnings.simplefilter("ignore", category=RuntimeWarning)
+    #     dh = np.sqrt(dx ** 2 + dy ** 2)
+    # dh = np.ma.masked_equal(dh, 0.0)
+    # logger.debug("Loading hfun_values.")
+    # multiplier = 1./3.
+    # values = np.abs((multiplier) * (bathymetry / dh))
+    # bathymetry[bathymetry > 0] = np.nan
+    # values[bathymetry > 0] = np.nan
+    # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    # ax[0].imshow(bathymetry, cmap='gray')
+    # ax[0].set_title('DEM')
+    # ax[1].imshow(values, cmap='gray')
+    # ax[1].set_title('Thalwegs')
+    # plt.show()
+#     from scipy.ndimage import morphological_gradient as gradient_wrap
+
+#     from skimage.measure import label, find_contours, labeled_image
+#     from skimage.segmentation import watershed
+
+# # Invert slope to create a blob image for watershed segmentation
+#     slope_inverted = 1 - slope
+
+# # Apply watershed to segment catchment basins
+#     labels = label(slope_inverted)
+#     mask = np.zeros_like(bathymetry)
+#     for i in range(1, labels.max() + 1):
+#         mask_i = (labels == i)
+#         mask_i[mask_i] = bathymetry[mask_i]
+#         contours = find_contours(slope_inverted[mask_i], 0.5)
+#         for contour in contours:
+#             x, y = np.where(np.logical_and(mask_i, np.logical_or(contour >= contour.min(), contour <= contour.max())))
+#             thalweg_x = np.mean(x)
+#             thalweg_y = np.mean(y)
+#             plt.plot(thalweg_x, thalweg_y, 'ro')
+
+# # Visualize thalwegs
+#     plt.imshow(bathymetry, cmap='gray')
+#     plt.gca().invert_yaxis()
+#     plt.show()
+    # Filter land areas
+    # mask = dem == float('nan')
+    # dem[dem > 0] = np.nan
+    # dem_filtered = dem
+
+    # # Calculate slope
+    # slope = scipy.ndimage.sobel(dem_filtered, mode='wrap')
+    # slope[np.isnan(slope)] = np.finfo(np.float64).max
+    # slope = np.abs(slope)
+    # # Find local minima
+    # thalwegs, min_val = scipy.ndimage.label(slope == slope.min())
+    # thalwegs = thalwegs.astype(float)
+    # thalwegs[thalwegs == 0] = np.nan
+    # breakpoint()
+    # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    # ax[0].imshow(dem_filtered, cmap='gray')
+    # ax[0].set_title('DEM')
+    # ax[1].imshow(thalwegs)
+    # ax[1].set_title('Thalwegs')
+    # plt.show()
+
+    # Connect neighboring thalwegs
+    # thalwegs_connected = np.zeros_like(thalwegs)
+    # for i in range(1, thalwegs.max()):
+    #     thalwegs_connected[thalwegs == i] = i - 1
+
+    # # Visualize
+    # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    # ax[0].imshow(dem_filtered, cmap='gray')
+    # ax[0].set_title('DEM')
+    # ax[1].imshow(thalwegs_connected, cmap='gray')
+    # ax[1].set_title('Thalwegs')
+    # plt.show()

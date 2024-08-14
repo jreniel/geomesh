@@ -16,6 +16,58 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+
+async def launch_task(
+        cmd,
+        semaphore=None,
+        expect_pattern=None,
+        index_actions=None,
+        **kwargs
+        ):
+    semaphore = asyncio.Semaphore(1) if semaphore is None else semaphore
+    if not isinstance(cmd, str):
+        cmd = " ".join(cmd)
+    expect_pattern = expect_pattern or [pexpect.EOF, '(core dumped)']
+
+    def default_EOF_action(p):
+        if p.exitstatus != 0:
+            raise Exception(f'Failed command:\n{cmd}\n{p.before}')
+
+    def default_core_dumped_action(p):
+        default_EOF_action(p)
+
+    index_actions = index_actions or 2*[default_EOF_action]
+
+    spawn_kwargs = {
+        'args': kwargs.get('args', []),
+        'timeout': kwargs.get('timeout', None),
+        'maxread': kwargs.get('maxread', 2000),
+        'searchwindowsize': kwargs.get('searchwindowsize', None),
+        'logfile': kwargs.get('logfile', None),
+        'cwd': kwargs.get('cwd', None),
+        'env': kwargs.get('env', os.environ),
+        'ignore_sighup': kwargs.get('ignore_sighup', False),
+        'echo': kwargs.get('echo', True),
+        'preexec_fn': kwargs.get('preexec_fn', None),
+        'encoding': kwargs.get('encoding', 'utf-8'),
+        'codec_errors': kwargs.get('codec_errors', 'strict'),
+        'dimensions': kwargs.get('dimensions', None),
+        'use_poll': kwargs.get('use_poll', False)
+    }
+
+    async with semaphore:
+        logger.info(f'Running command:\n{cmd}')
+        with pexpect.spawn(
+                cmd,
+                **spawn_kwargs
+                ) as p:
+            p.logfile_read = sys.stdout
+            index = await p.expect(expect_pattern, async_=True)
+            if index_actions:
+                index_actions[index](p)
+    return p
+
+
 class BaseCluster(ABC):
 
     def __init__(self, semaphore=None):
@@ -98,52 +150,3 @@ class BaseCluster(ABC):
 
 
 
-async def launch_task(
-        cmd,
-        semaphore=None,
-        expect_pattern=None,
-        index_actions=None,
-        **kwargs
-        ):
-    semaphore = asyncio.Semaphore(1) if semaphore is None else semaphore
-    if not isinstance(cmd, str):
-        cmd = " ".join(cmd)
-    expect_pattern = expect_pattern or [pexpect.EOF, '(core dumped)']
-
-    def default_EOF_action(p):
-        if p.exitstatus != 0:
-            raise Exception(f'Failed command:\n{cmd}\n{p.before}')
-
-    def default_core_dumped_action(p):
-        default_EOF_action(p)
-
-    index_actions = index_actions or 2*[default_EOF_action]
-
-    spawn_kwargs = {
-        'args': kwargs.get('args', []),
-        'timeout': kwargs.get('timeout', None),
-        'maxread': kwargs.get('maxread', 2000),
-        'searchwindowsize': kwargs.get('searchwindowsize', None),
-        'logfile': kwargs.get('logfile', None),
-        'cwd': kwargs.get('cwd', None),
-        'env': kwargs.get('env', os.environ),
-        'ignore_sighup': kwargs.get('ignore_sighup', False),
-        'echo': kwargs.get('echo', True),
-        'preexec_fn': kwargs.get('preexec_fn', None),
-        'encoding': kwargs.get('encoding', 'utf-8'),
-        'codec_errors': kwargs.get('codec_errors', 'strict'),
-        'dimensions': kwargs.get('dimensions', None),
-        'use_poll': kwargs.get('use_poll', False)
-    }
-
-    async with semaphore:
-        logger.info(f'Running command:\n{cmd}')
-        with pexpect.spawn(
-                cmd,
-                **spawn_kwargs
-                ) as p:
-            p.logfile_read = sys.stdout
-            index = await p.expect(expect_pattern, async_=True)
-            if index_actions:
-                index_actions[index](p)
-    return p

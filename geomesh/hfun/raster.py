@@ -1,26 +1,13 @@
-from multiprocessing import cpu_count, Pool
-from functools import lru_cache
-from copy import copy
-from time import time
-from typing import Union, List
 import logging
 import os
 import tempfile
 import warnings
+from copy import copy
+from functools import lru_cache
+from multiprocessing import Pool, cpu_count
+from time import time
+from typing import List, Union
 
-from centerline.geometry import Centerline
-from jigsawpy import jigsaw_msh_t, jigsaw_jig_t
-from jigsawpy import libsaw
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from pyproj import CRS, Transformer
-from rasterio.io import MemoryFile
-from scipy.spatial import KDTree
-from shapely import ops
-from shapely.geometry import LineString
-from shapely.geometry import LinearRing
-from shapely.geometry import MultiLineString
-from shapely.geometry import MultiPolygon
-from shapely.geometry import Polygon
 import centerline
 import fiona
 import geopandas as gpd
@@ -31,13 +18,22 @@ import pandas as pd
 import pyarrow
 import rasterio
 import scipy
+import shapely
+from centerline.geometry import Centerline
+from jigsawpy import jigsaw_jig_t, jigsaw_msh_t, libsaw
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from pyproj import CRS, Transformer
+from rasterio.io import MemoryFile
+from scipy.spatial import KDTree
+from shapely import ops
+from shapely.geometry import (LinearRing, LineString, MultiLineString,
+                              MultiPolygon, Polygon)
 
-from geomesh import utils, Geom
+from geomesh import Geom, utils
 from geomesh.figures import figure
 from geomesh.geom.shapely_geom import PolygonGeom
 from geomesh.hfun.base import BaseHfun
 from geomesh.raster import Raster, get_iter_windows, get_window_data
-
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +151,7 @@ class RasterHfun(BaseHfun, Raster):
                 tria3[0, :, :, 0] = indices[:-1, :-1]
                 tria3[0, :, :, 1] = indices[1:, :-1]
                 tria3[0, :, :, 2] = indices[1:, 1:]
-                
+
                 tria3[1, :, :, 0] = indices[:-1, :-1]
                 tria3[1, :, :, 1] = indices[1:, 1:]
                 tria3[1, :, :, 2] = indices[:-1, 1:]
@@ -568,6 +564,9 @@ class RasterHfun(BaseHfun, Raster):
             return
 
         centroid = np.array(mp.centroid.coords).flatten()
+        if len(centroid) != 2:
+            return
+            # raise Exception(f"{centroid=}")
         local_azimuthal_projection = CRS.from_user_input(
             f"+proj=aeqd +R=6371000 +units=m +lat_0={centroid[1]} +lon_0={centroid[0]}"
             )
@@ -882,9 +881,9 @@ class RasterHfun(BaseHfun, Raster):
         # self._tmpfile = tmpfile
 
     def _add_quad_sizes(self, quads_gdf):
-        from rasterstats.io import bounds_window
         from rasterio.features import rasterize
         from rasterio.windows import Window, from_bounds, toranges
+        from rasterstats.io import bounds_window
         for i, ((xvals, yvals, hfun_values), (rx, ry, rast_values)) in enumerate(zip(self, self.raster)):
             outarray = np.full(hfun_values.shape, np.nan)
             local_azimuthal_projection = f"+proj=aeqd +R=6371000 +units=m +lat_0={np.median(yvals)} +lon_0={np.median(xvals)}"
@@ -903,7 +902,7 @@ class RasterHfun(BaseHfun, Raster):
                     raster_window = Window(col_off=col_off, row_off=row_off,
                                            width=hfun_values.shape[1], height=hfun_values.shape[0])
                     window_intersection = raster_window.intersection(geom_window)
-                    
+
                     if window_intersection.width > 0 and window_intersection.height > 0:
                         # Burn-in the length value for each line segment
                         local_linestring = ops.transform(transformer.transform, linestring)
@@ -1320,7 +1319,7 @@ def calculate_distances_and_points(centerlines, polygon, cross_section_node_coun
     for ring in [polygon.exterior] + list(polygon.interiors):
         ring_coords = list(ring.coords)
         ring_midpoints = [np.array(LineString(ring_coords).interpolate((i+0.5)/len(ring_coords), normalized=True).coords).flatten() for i in range(len(ring_coords)-1)]
-        
+
         # Calculate distance from each midpoint of polygon edges to the centerlines
         midpoints_distances.extend([(2/cross_section_node_count)*centerlines.geometry.distance(Point(midpoint)) for midpoint in ring_midpoints])
         midpoints_points.extend(ring_midpoints)
@@ -1352,7 +1351,7 @@ def process_contours(centerlines, local_contours, cross_section_node_count):
     centerline_midpoints = np.vstack([np.array(p.coords) for p in interior_segments.centroid])
     points = [np.vstack(p.geometry.coords) for p in local_contours.itertuples()]
     if len(points) == 0:
-        return [None, None]
+        return gpd.GeoDataFrame()
     tree = KDTree(np.vstack(points))
     dist, idxs = tree.query(
             centerline_midpoints,
@@ -1386,8 +1385,15 @@ def get_mp_points_values(raster, final_patches, zmin, zmax, local_crs, nprocs, c
 
     with Pool(nprocs) as pool:
         results = pool.starmap(process_contours, job_args)
-    results = pd.concat(results)
-    midpoints_gdf = gpd.GeoDataFrame([{'geometry': row.geometry.centroid} for row in results.itertuples()], crs=local_crs)
+    try:
+        results = pd.concat(results)
+    except:
+        print(results)
+        raise
+    try:
+        midpoints_gdf = gpd.GeoDataFrame([{'geometry': row.geometry.centroid} for row in results.itertuples()], crs=local_crs)
+    except:
+        return [], []
     midpoints_gdf.to_crs(raster.crs, inplace=True)
     mp_points = np.vstack([np.array(row.geometry.coords) for row in midpoints_gdf.itertuples()])
     mp_values = np.array(results['target_size'])
@@ -1455,7 +1461,8 @@ def get_centerlines(patch, interpolation_distance):
         pass
     except centerline.exceptions.InputGeometryEnvelopeIsPointError:
         pass
-
+    except shapely.errors.GEOSException:
+        pass
 
 def resample_linear_ring(linear_ring, segment_length):
     total_length = linear_ring.length
@@ -1489,8 +1496,10 @@ def resample_polygon(polygon, segment_length):
 
 
 def test_aa_on_heavy_raster():
-    from appdirs import user_data_dir
     from pathlib import Path
+
+    from appdirs import user_data_dir
+
     from geomesh import Raster, utils
     rootdir = Path(user_data_dir('geomesh'))
     # heavy_raster = rootdir / 'raster_cache/chs.coast.noaa.gov/htdata/raster2/elevation/NCEI_ninth_Topobathy_2014_8483/chesapeake_bay/ncei19_n38x00_w076x75_2019v1.tif'
@@ -1536,7 +1545,7 @@ def test_aa_on_heavy_raster():
     msh_t.value[idxs] = values
     from geomesh import Mesh
     ax = Mesh(msh_t).make_plot()
-    utils.triplot(msh_t, axes=ax)
+    utils.triplot(msh_t, ax=ax)
     plt.title(f'node count: {len(msh_t.vert2["coord"])}')
     plt.gca().axis('scaled')
     plt.show(block=True)

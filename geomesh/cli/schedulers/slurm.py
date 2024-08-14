@@ -181,6 +181,9 @@ class SLURMCluster(BaseCluster):
             job_filename = Path(tempfile.NamedTemporaryFile().name)
         self._job_filename = job_filename
 
+    def get_submit_command_wrapped(self, cmd):
+        return self._get_blocking_submit_command(cmd)
+
     def _get_blocking_submit_command(self, cmd, **kwargs):
         if self.use_srun:
             return self._get_srun_command(cmd, **kwargs)
@@ -275,7 +278,7 @@ class SLURMCluster(BaseCluster):
         sinfo_data = subprocess.run(['sinfo', '-N', '-l'], stdout=subprocess.PIPE).stdout.decode('utf-8')
         # Split the data into lines
         lines = sinfo_data.split('\n')[1:]
-        
+
         # Parse the header to get the index of each field
         header = lines[0].split()
         state_idx = header.index('STATE')

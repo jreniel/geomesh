@@ -1,12 +1,16 @@
+import inspect
+import logging
+import typing
 from collections import defaultdict
 from itertools import permutations
 from time import time
 from typing import Dict, Union
-import inspect
-import logging
-import typing
 
-
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import PythonCDT as cdt
 from inpoly import inpoly2
 from jigsawpy import jigsaw_msh_t
 from matplotlib.collections import PolyCollection
@@ -15,13 +19,9 @@ from matplotlib.tri import Triangulation
 from numpy.linalg import norm
 from pyproj import CRS, Transformer
 from scipy.interpolate import RectBivariateSpline, griddata
-from shapely.geometry import MultiPolygon, Polygon, LinearRing
-from shapely.ops import linemerge, polygonize, LineString, MultiLineString
-import geopandas as gpd
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-
+from shapely.geometry import LinearRing, MultiPolygon, Polygon
+from shapely.ops import LineString, MultiLineString, linemerge, polygonize, unary_union
+from shapely.validation import explain_validity
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +31,38 @@ def mesh_to_tri(mesh):
     mesh is a jigsawpy.jigsaw_msh_t() instance.
     """
     return Triangulation(
-        mesh.vert2['coord'][:, 0],
-        mesh.vert2['coord'][:, 1],
-        mesh.tria3['index'])
+        mesh.vert2["coord"][:, 0], mesh.vert2["coord"][:, 1], mesh.tria3["index"]
+    )
 
+
+def ensure_ccw_triangles(msh_t):
+    vert2 = msh_t.vert2["coord"]
+    tria3 = msh_t.tria3["index"]
+    # Get the coordinates of all triangle vertices
+    v1 = vert2[tria3[:, 0]]
+    v2 = vert2[tria3[:, 1]]
+    v3 = vert2[tria3[:, 2]]
+
+    # Calculate the signed area for all triangles at once
+    area = 0.5 * ((v2[:, 0] - v1[:, 0]) * (v3[:, 1] - v1[:, 1]) -
+                   (v3[:, 0] - v1[:, 0]) * (v2[:, 1] - v1[:, 1]))
+
+    # Create a boolean mask for triangles that need to be flipped
+    flip_mask = area < 0
+
+    # Create a new array with flipped triangles where necessary
+    tria3_ccw = tria3.copy()
+    tria3_ccw[flip_mask, 1], tria3_ccw[flip_mask, 2] = tria3[flip_mask, 2], tria3[flip_mask, 1]
+
+    # return tria3_ccw
+    msh_t.tria3["index"] = tria3_ccw
 
 def get_mapping(mapping, x):
     return list(map(lambda x: mapping[x], x))
 
 
 def compute_msh_t_tria3_angles(msh_t):
-    vert2, tria3 = msh_t.vert2['coord'], msh_t.tria3['index']
+    vert2, tria3 = msh_t.vert2["coord"], msh_t.tria3["index"]
     # Get the vertices for each triangle
     v1 = vert2[tria3[:, 0]]
     v2 = vert2[tria3[:, 1]]
@@ -58,9 +79,9 @@ def compute_msh_t_tria3_angles(msh_t):
     len3 = np.linalg.norm(vec3, axis=-1)
 
     # Compute the interior angles using the law of cosines
-    angle1 = np.arccos(np.einsum('ij,ij->i', vec1, -vec2) / (len1 * len2))
-    angle2 = np.arccos(np.einsum('ij,ij->i', -vec1, vec3) / (len1 * len3))
-    angle3 = np.arccos(np.einsum('ij,ij->i', vec2, -vec3) / (len2 * len3))
+    angle1 = np.arccos(np.einsum("ij,ij->i", vec1, -vec2) / (len1 * len2))
+    angle2 = np.arccos(np.einsum("ij,ij->i", -vec1, vec3) / (len1 * len3))
+    angle3 = np.arccos(np.einsum("ij,ij->i", vec2, -vec3) / (len2 * len3))
 
     # Put the angles in an nx3 array, where n is the number of triangles
     tria3_angles = np.column_stack((angle1, angle2, angle3))
@@ -71,7 +92,7 @@ def compute_msh_t_tria3_angles(msh_t):
 def remove_duplicate_triangles(msh_t):
     # remove duplicate triangles (if any)
     # Sort each row
-    sorted_arr = np.sort(msh_t.tria3['index'], axis=1)
+    sorted_arr = np.sort(msh_t.tria3["index"], axis=1)
 
     # Identify and remove duplicates
     _, indices = np.unique(sorted_arr, axis=0, return_index=True)
@@ -81,45 +102,51 @@ def remove_duplicate_triangles(msh_t):
 
 
 def cleanup_isolates(mesh):
-    node_indexes = np.arange(mesh.vert2['coord'].shape[0])
-    used_indexes, inverse = np.unique(mesh.tria3['index'], return_inverse=True)
+    node_indexes = np.arange(mesh.vert2["coord"].shape[0])
+    used_indexes, inverse = np.unique(mesh.tria3["index"], return_inverse=True)
     isin = np.isin(node_indexes, used_indexes, assume_unique=True)
     if np.all(isin):
         return
     vert2_idxs = np.where(isin)[0]
     df = pd.DataFrame(index=node_indexes).iloc[vert2_idxs].reset_index()
-    mapping = {v: k for k, v in df.to_dict()['index'].items()}
-    tria3 = np.array([mapping[x] for x in used_indexes])[inverse].reshape(mesh.tria3['index'].shape)
+    mapping = {v: k for k, v in df.to_dict()["index"].items()}
+    tria3 = np.array([mapping[x] for x in used_indexes])[inverse].reshape(
+        mesh.tria3["index"].shape
+    )
     mesh.vert2 = mesh.vert2.take(vert2_idxs, axis=0)
     if len(mesh.value) > 0:
         mesh.value = mesh.value.take(vert2_idxs)
     mesh.tria3 = np.asarray(
-        [(tuple(indices), mesh.tria3['IDtag'][i])
-         for i, indices in enumerate(tria3)],
-        dtype=jigsaw_msh_t.TRIA3_t)
+        [(tuple(indices), mesh.tria3["IDtag"][i]) for i, indices in enumerate(tria3)],
+        dtype=jigsaw_msh_t.TRIA3_t,
+    )
 
 
 def put_edge2(mesh):
     tri = Triangulation(
-        mesh.vert2['coord'][:, 0],
-        mesh.vert2['coord'][:, 1],
-        mesh.tria3['index'])
+        mesh.vert2["coord"][:, 0], mesh.vert2["coord"][:, 1], mesh.tria3["index"]
+    )
     mesh.edge2 = tri.edges.astype(jigsaw_msh_t.EDGE2_t)
 
 
 def _check_if_is_interior_worker(polygon, _msh_t):
-    in_poly, on_edge = inpoly2(np.array(polygon.exterior.coords), _msh_t.vert2['coord'], _msh_t.edge2['index'])
+    in_poly, on_edge = inpoly2(
+        np.array(polygon.exterior.coords), _msh_t.vert2["coord"], _msh_t.edge2["index"]
+    )
     if np.all(in_poly):
         return True
     return False
 
 
-
 def filter_polygons(polygons, crs) -> typing.List[Polygon]:
-    exteriors_gdf = gpd.GeoDataFrame(geometry=[Polygon(poly.exterior) for poly in polygons], crs=crs)
-    joined = gpd.sjoin(exteriors_gdf, exteriors_gdf, how='left', predicate='within')
+    exteriors_gdf = gpd.GeoDataFrame(
+        geometry=[Polygon(poly.exterior) for poly in polygons], crs=crs
+    )
+    joined = gpd.sjoin(exteriors_gdf, exteriors_gdf, how="left", predicate="within")
     joined = joined[joined.index != joined.index_right]
-    filtered_polygons = exteriors_gdf.loc[~exteriors_gdf.index.isin(joined.index.unique())]
+    filtered_polygons = exteriors_gdf.loc[
+        ~exteriors_gdf.index.isin(joined.index.unique())
+    ]
     within_indices = filtered_polygons.index.unique()
     new_polygons = [polygons[index] for index in filtered_polygons.index.unique()]
     within_counts = joined.index.value_counts()
@@ -132,20 +159,21 @@ def filter_polygons(polygons, crs) -> typing.List[Polygon]:
         new_polygons.extend(processed_nested_polygons)
         return new_polygons
 
+
 def cleanup_pinched_nodes(mesh, e0_unique, e0_count, e1_unique, e1_count):
     mesh.tria3 = mesh.tria3.take(
         np.where(
             np.logical_or(
-                ~np.any(np.isin(mesh.tria3['index'], e0_unique[e0_count > 1]), axis=1),
-                ~np.any(np.isin(mesh.tria3['index'], e1_unique[e1_count > 1]), axis=1),
-                )
-            )[0],
-        axis=0
-        )
+                ~np.any(np.isin(mesh.tria3["index"], e0_unique[e0_count > 1]), axis=1),
+                ~np.any(np.isin(mesh.tria3["index"], e1_unique[e1_count > 1]), axis=1),
+            )
+        )[0],
+        axis=0,
+    )
 
 
 def geom_to_multipolygon(mesh):
-    logger.warning('Deprecation warning: Use get_geom_msh_t_from_msh_t_as_mp instead.')
+    logger.warning("Deprecation warning: Use get_geom_msh_t_from_msh_t_as_mp instead.")
     return get_geom_msh_t_from_msh_t_as_mp(mesh)
 
 
@@ -153,28 +181,122 @@ def get_geom_msh_t_from_msh_t_as_msh_t(msh_t) -> jigsaw_msh_t:
     mp = get_geom_msh_t_from_msh_t_as_mp(msh_t)
     return multipolygon_to_jigsaw_msh_t(mp)
 
+
 def get_geom_msh_t_from_msh_t(mesh):
     from geomesh.geom.base import multipolygon_to_jigsaw_msh_t
+
     return multipolygon_to_jigsaw_msh_t(get_geom_msh_t_from_msh_t_as_mp(mesh))
+
 
 def multipolygon_to_jigsaw_msh_t(mp):
     from geomesh.geom.base import multipolygon_to_jigsaw_msh_t
+
     return multipolygon_to_jigsaw_msh_t(mp)
 
-def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
-    from shapely.validation import explain_validity
 
-    tria3 = msh_t.tria3['index']
-    quad4 = msh_t.quad4['index']
-    tria3_edges = np.hstack((tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])).reshape(-1, 2)
-    quad4_edges = np.hstack((quad4[:, [0, 1]], quad4[:, [1, 2]], quad4[:, [2, 3]], quad4[:, [3, 0]])).reshape(-1, 2)
+def fix_self_intersecting_boundaries_mut(msh_t) -> jigsaw_msh_t:
+    tria3 = msh_t.tria3["index"]
+    quad4 = msh_t.quad4["index"]
+    tria3_edges = np.hstack(
+        (tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])
+    ).reshape(-1, 2)
+    quad4_edges = np.hstack(
+        (quad4[:, [0, 1]], quad4[:, [1, 2]], quad4[:, [2, 3]], quad4[:, [3, 0]])
+    ).reshape(-1, 2)
     all_edges = np.vstack([tria3_edges, quad4_edges])
     sorted_edges = np.sort(all_edges, axis=1)
     unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
     boundary_edges = unique_edges[counts == 1]
-    boundary_rings = linemerge([LineString(x) for x in msh_t.vert2['coord'][boundary_edges]])
+    boundary_rings = linemerge(
+        [LineString(x) for x in msh_t.vert2["coord"][boundary_edges]]
+    )
     if isinstance(boundary_rings, LineString):
         boundary_rings = MultiLineString(boundary_rings)
+    invalids = []
+    for i, ring in enumerate(boundary_rings.geoms):
+        try:
+            ring = LinearRing(ring)
+        except Exception as err:
+            invalids.append((i, ring, str(err)))
+        if not np.all([ring.is_ring, ring.is_valid]):
+            invalids.append((i, ring, explain_validity(ring)))
+    if len(invalids) == 0:
+        return msh_t
+
+    participating_coords = set()
+    for i, ring, validity_text in invalids:
+        for coord in ring.coords:
+            participating_coords.add(coord)
+    from scipy.spatial import KDTree
+
+    tree = KDTree(msh_t.vert2["coord"])
+    dd, ii = tree.query(np.array(list(participating_coords)))
+    participating_tria_indexes = np.where(
+        np.any(np.isin(msh_t.tria3["index"], ii.reshape(1, -1)), axis=1)
+    )
+
+    # node_trias = msh_t.vert2["coord"][msh_t.tria3["index"][participating_tria_indexes], :]
+
+    # breakpoint()
+    geometry = list(
+        map(
+            Polygon,
+            msh_t.vert2["coord"][msh_t.tria3["index"][participating_tria_indexes]],
+        )
+    )
+    mp_uu = unary_union(geometry)
+    if isinstance(mp_uu, Polygon):
+        mp_uu = MultiPolygon([mp_uu])
+    new_trias = []
+
+    for i, poly in enumerate(mp_uu.geoms):
+        boundary = poly.boundary
+        t = cdt.Triangulation(
+            cdt.VertexInsertionOrder.AS_PROVIDED,
+            cdt.IntersectingConstraintEdges.RESOLVE,
+            0.0,
+        )
+        if not hasattr(boundary, "geoms"):
+            coords = boundary.coords
+        else:
+            largest_geom = max(boundary.geoms, key=lambda bnd: bnd.length)
+            coords = largest_geom.coords
+        t.insert_vertices([cdt.V2d(*coord) for coord in coords])
+        edges = [(i, (i + 1) % len(coords)) for i in range(len(coords))]
+        t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in edges])
+        t.erase_outer_triangles_and_holes()
+        vertices = np.array([(v.x, v.y) for v in t.vertices])
+        elements = np.array([tria.vertices for tria in t.triangles])
+        new_trias.extend(list(map(Polygon, vertices[elements, :].tolist())))
+
+    wireframe(msh_t, ax=plt.gca(), linewidth=0.1)
+    gpd.GeoDataFrame(geometry=new_trias, crs=msh_t.crs).plot(ax=plt.gca(), cmap="jet")
+    # gpd.GeoDataFrame(geometry=geometry, crs=msh_t.crs).plot(ax=plt.gca(), facecolor='b', edgecolor='r', alpha=0.5)
+    plt.show(block=False)
+    breakpoint()
+
+    return msh_t
+
+
+def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
+
+    tria3 = msh_t.tria3["index"]
+    quad4 = msh_t.quad4["index"]
+    tria3_edges = np.hstack(
+        (tria3[:, [0, 1]], tria3[:, [1, 2]], tria3[:, [2, 0]])
+    ).reshape(-1, 2)
+    quad4_edges = np.hstack(
+        (quad4[:, [0, 1]], quad4[:, [1, 2]], quad4[:, [2, 3]], quad4[:, [3, 0]])
+    ).reshape(-1, 2)
+    all_edges = np.vstack([tria3_edges, quad4_edges])
+    sorted_edges = np.sort(all_edges, axis=1)
+    unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
+    boundary_edges = unique_edges[counts == 1]
+    boundary_rings = linemerge(
+        [LineString(x) for x in msh_t.vert2["coord"][boundary_edges]]
+    )
+    if isinstance(boundary_rings, LineString):
+        boundary_rings = MultiLineString([boundary_rings])
     # verify
     # gpd.GeoDataFrame(geometry=[LineString(x) for x in boundary_rings.geoms]).plot(ax=plt.gca(), color=np.random.rand(3,), linewidth=1.3)
     # plt.show(block=False)
@@ -197,7 +319,13 @@ def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
         for i, ring, validity_text in invalids:
             print(validity_text)
             icoll.append(str(i))
-            gpd.GeoDataFrame(geometry=[ring]).plot(ax=plt.gca(), color=np.random.rand(3,), linewidth=1.3)
+            gpd.GeoDataFrame(geometry=[ring]).plot(
+                ax=plt.gca(),
+                color=np.random.rand(
+                    3,
+                ),
+                linewidth=1.3,
+            )
         plt.title(f"Cannot build Not rings at {', '.join(icoll)}")
         plt.show(block=False)
         breakpoint()
@@ -213,10 +341,10 @@ def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
     #         raise
     # fig, ax = plt.subplots()
     polygons = list(polygonize(boundary_rings))
-    mp =  MultiPolygon(filter_polygons(polygons, msh_t.crs))
+    mp = MultiPolygon(filter_polygons(polygons, msh_t.crs))
     # verify
     # fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(10, 4))
-    # gpd.GeoDataFrame(geometry=boundary_rings).explode().plot(ax=axes[0], cmap='tab20')
+    # gpd.GeoDataFrame(geometry=[boundary_rings]).explode().plot(ax=axes[0], cmap='tab20')
     # gpd.GeoDataFrame(geometry=polygons).plot(ax=axes[1], cmap='jet')
     # plt.show(block=False)
     # breakpoint()
@@ -232,7 +360,6 @@ def get_geom_msh_t_from_msh_t_as_mp(msh_t) -> MultiPolygon:
     return mp
 
 
-
 def needs_sieve(mesh, area=None):
     # lp = LineProfiler()
     # mp = lp(geom_to_multipolygon)(mesh, nprocs)
@@ -240,7 +367,7 @@ def needs_sieve(mesh, area=None):
     # exit()
     # from time import time
     # start = time()
-    print('start geom to mp')
+    print("start geom to mp")
     mp = geom_to_multipolygon(mesh)
     # print(f'end geom_to_mp: {time()-start}')
     areas = [polygon.area for polygon in mp.geoms]
@@ -264,25 +391,25 @@ def needs_sieve(mesh, area=None):
 def put_IDtags(mesh):
     # start enumerating on 1 to avoid issues with indexing on fortran models
     mesh.vert2 = np.array(
-        [(coord, id+1) for id, coord in enumerate(mesh.vert2['coord'])],
-        dtype=jigsaw_msh_t.VERT2_t
-        )
+        [(coord, id + 1) for id, coord in enumerate(mesh.vert2["coord"])],
+        dtype=jigsaw_msh_t.VERT2_t,
+    )
     mesh.tria3 = np.array(
-        [(index, id+1) for id, index in enumerate(mesh.tria3['index'])],
-        dtype=jigsaw_msh_t.TRIA3_t
-        )
+        [(index, id + 1) for id, index in enumerate(mesh.tria3["index"])],
+        dtype=jigsaw_msh_t.TRIA3_t,
+    )
     mesh.quad4 = np.array(
-        [(index, id+1) for id, index in enumerate(mesh.quad4['index'])],
-        dtype=jigsaw_msh_t.QUAD4_t
-        )
+        [(index, id + 1) for id, index in enumerate(mesh.quad4["index"])],
+        dtype=jigsaw_msh_t.QUAD4_t,
+    )
     mesh.hexa8 = np.array(
-        [(index, id+1) for id, index in enumerate(mesh.hexa8['index'])],
-        dtype=jigsaw_msh_t.HEXA8_t
-        )
+        [(index, id + 1) for id, index in enumerate(mesh.hexa8["index"])],
+        dtype=jigsaw_msh_t.HEXA8_t,
+    )
 
 
 def check_pinched_nodes(mesh):
-    print('start cleanup pinched nodes')
+    print("start cleanup pinched nodes")
     start = time()
     tri = mesh_to_tri(mesh)
     # TODO: can probably be faster if using inpoly2 instead
@@ -291,7 +418,7 @@ def check_pinched_nodes(mesh):
     e1_coll = list()
     for i, j in idxs:
         e0_coll.append(tri.triangles[i, j])
-        e1_coll.append(tri.triangles[i, (j+1) % 3])
+        e1_coll.append(tri.triangles[i, (j + 1) % 3])
     e0_unique, e0_count = np.unique(e0_coll, return_counts=True)
     e1_unique, e1_count = np.unique(e1_coll, return_counts=True)
 
@@ -303,28 +430,32 @@ def check_pinched_nodes(mesh):
 
 def get_msh_t_tria3_LinearRing_gdf(msh_t):
     return gpd.GeoDataFrame(
-        geometry=[LinearRing(msh_t.vert2['coord'][tria, :]) for tria in msh_t.tria3['index']],
-        crs=msh_t.crs
+        geometry=[
+            LinearRing(msh_t.vert2["coord"][tria, :]) for tria in msh_t.tria3["index"]
+        ],
+        crs=msh_t.crs,
     )
 
 
 def get_msh_t_tria3_Polygon_gdf(msh_t):
-    return gpd.GeoDataFrame(geometry=[Polygon(msh_t.vert2['coord'][tria, :]) for tria in msh_t.tria3['index']], crs=msh_t.crs)
+    return gpd.GeoDataFrame(
+        geometry=[
+            Polygon(msh_t.vert2["coord"][tria, :]) for tria in msh_t.tria3["index"]
+        ],
+        crs=msh_t.crs,
+    )
 
 
 def get_split_quad4_as_tria3_index(msh_t):
     new_tri = []
-    for quad in msh_t.quad4['index']:
+    for quad in msh_t.quad4["index"]:
         new_tri.append([quad[0], quad[1], quad[3]])
         new_tri.append([quad[1], quad[2], quad[3]])
     return np.array([(new_idx, 0) for new_idx in new_tri], dtype=jigsaw_msh_t.TRIA3_t)
 
 
 def get_tria3_from_split_quad4(msh_t):
-    return np.hstack([
-        msh_t.tria3.copy(),
-        get_split_quad4_as_tria3_index(msh_t)
-        ])
+    return np.hstack([msh_t.tria3.copy(), get_split_quad4_as_tria3_index(msh_t)])
 
 
 def split_quad4_to_tria3(msh_t):
@@ -337,10 +468,14 @@ def remove_quad4_from_tria3(msh_t):
     split_tri_indexes = set(tuple(index[0]) for index in split_tri_indexes)
 
     # Filter the existing tria3 to exclude those that were created by splitting quads
-    msh_t.tria3 = np.array([
-        (index, IDtag) for index, IDtag in msh_t.tria3
-        if tuple(index) not in split_tri_indexes
-    ], dtype=jigsaw_msh_t.TRIA3_t)
+    msh_t.tria3 = np.array(
+        [
+            (index, IDtag)
+            for index, IDtag in msh_t.tria3
+            if tuple(index) not in split_tri_indexes
+        ],
+        dtype=jigsaw_msh_t.TRIA3_t,
+    )
 
 
 # def remove_degenerate_triangles(msh_t, min_area=1e-1):
@@ -351,7 +486,12 @@ def remove_quad4_from_tria3(msh_t):
 
 
 def remove_flat_triangles(msh_t):
-    row_has_repeated_nodes = np.array([len(np.unique(msh_t.tria3['index'][row, :])) != 3 for row in range(msh_t.tria3['index'] .shape[0])])
+    row_has_repeated_nodes = np.array(
+        [
+            len(np.unique(msh_t.tria3["index"][row, :])) != 3
+            for row in range(msh_t.tria3["index"].shape[0])
+        ]
+    )
     msh_t.tria3 = msh_t.tria3.take(np.where(~row_has_repeated_nodes)[0])
     # degenerate_mask = check_degenerate(msh_t)
     # if np.any(degenerate_mask):
@@ -364,7 +504,7 @@ def check_degenerate(msh_t, max_tol=1e-8):
     """
 
     # Extract all vertex coords for all triangles
-    tri_verts = msh_t.vert2['coord'][msh_t.tria3['index']]
+    tri_verts = msh_t.vert2["coord"][msh_t.tria3["index"]]
 
     # Calculate vertex vectors for each triangle
     v1 = tri_verts[:, 1, :] - tri_verts[:, 0, :]
@@ -376,13 +516,14 @@ def check_degenerate(msh_t, max_tol=1e-8):
     # Histogram of cross product magnitudes
     hist, bins = np.histogram(np.log10(np.abs(cross)))
     gaps = np.diff(bins)
-    tol = 10**((bins[np.argmax(gaps)] - gaps.max()/2))
+    tol = 10 ** ((bins[np.argmax(gaps)] - gaps.max() / 2))
 
     # Enforce max tolerance
     tol = min(tol, max_tol)
 
     # Check for degenerates
     return np.abs(cross) < tol
+
 
 # def cleanup_flat_triangles2(mesh):
 #     areas = []
@@ -391,8 +532,6 @@ def check_degenerate(msh_t, max_tol=1e-8):
 #     areas = np.array(areas)
 #     # remove very small areas and
 #     remove_vert2_indexes = np.where(np.logical_and(areas <= 0, areas > -np.finfo(np.float16).eps))
-
-    
 
 
 # def remove_duplicate_coord_with_round(msh_t, decimal):
@@ -404,9 +543,7 @@ def check_degenerate(msh_t, max_tol=1e-8):
 #     tria3 = msh_t.tria3['index']
 
 
-
 #     breakpoint()
-
 
 
 # def cleanup_flat_triangles(mesh):
@@ -429,27 +566,44 @@ def check_degenerate(msh_t, max_tol=1e-8):
 
 def remove_duplicate_vert2(msh_t, rounding_decimals: int = None):
 
-    vert2_coord = msh_t.vert2['coord'].copy()
+    vert2_coord = msh_t.vert2["coord"].copy()
     if rounding_decimals is not None:
-        vert2_coord = np.around(msh_t.vert2['coord'], decimals=rounding_decimals)
+        vert2_coord = np.around(msh_t.vert2["coord"], decimals=rounding_decimals)
 
     # Use numpy unique to find unique rows and keep their first occurrences
-    unique_coords, indices, inverse_mapping = np.unique(vert2_coord, axis=0, return_index=True, return_inverse=True)
+    unique_coords, indices, inverse_mapping = np.unique(
+        vert2_coord, axis=0, return_index=True, return_inverse=True
+    )
 
     # Create a mapping to adjust the tria3_index accordingly
-    index_mapping = {old_index: new_index for new_index, old_index in enumerate(indices)}
+    index_mapping = {
+        old_index: new_index for new_index, old_index in enumerate(indices)
+    }
 
     # Adjust the indices in tria3_index
-    adjusted_tria3_index = np.array([list(map(index_mapping.get, indices)) for indices in msh_t.tria3['index']])
+    adjusted_tria3_index = np.array(
+        [list(map(index_mapping.get, indices)) for indices in msh_t.tria3["index"]]
+    )
 
     # Zip over the original vert2 coordinates using the indices
-    original_coords = msh_t.vert2['coord'][indices]
+    original_coords = msh_t.vert2["coord"][indices]
 
-    msh_t.vert2 = np.array([(coord, IDtag) for coord, IDtag in zip(original_coords, msh_t.vert2['IDtag'][indices])],
-                            dtype=jigsaw_msh_t.VERT2_t)
+    msh_t.vert2 = np.array(
+        [
+            (coord, IDtag)
+            for coord, IDtag in zip(original_coords, msh_t.vert2["IDtag"][indices])
+        ],
+        dtype=jigsaw_msh_t.VERT2_t,
+    )
 
-    msh_t.tria3 = np.array([(tria3_indices, IDtag) for tria3_indices, IDtag in zip(adjusted_tria3_index, msh_t.tria3['IDtag'])],
-                            dtype=jigsaw_msh_t.TRIA3_t)
+    msh_t.tria3 = np.array(
+        [
+            (tria3_indices, IDtag)
+            for tria3_indices, IDtag in zip(adjusted_tria3_index, msh_t.tria3["IDtag"])
+        ],
+        dtype=jigsaw_msh_t.TRIA3_t,
+    )
+
 
 #     logger.info('Checking for flat triangles.')
 #     node_indexes = np.arange(mesh.vert2['coord'].shape[0])
@@ -489,10 +643,6 @@ def remove_duplicate_vert2(msh_t, rounding_decimals: int = None):
 #     #         raise Exception(f'I Flipped\n{vertices=}\nas\n{_vertices=}\nbut still they are still clockwise.')
 
 #     # exit()
-
-
-
-
 
 
 #     # xtri = mesh.vert2['coord'][mesh.tria3['index'], 0]
@@ -536,26 +686,33 @@ def remove_duplicate_vert2(msh_t, rounding_decimals: int = None):
 
 def cleanup_pinched_nodes_iter(msh_t):
     # split_quad4_to_tria3(msh_t)
-    logger.debug('Checking for pinched nodes...')
-    has_pinched_nodes, e0_unique, e0_count, e1_unique, e1_count = check_pinched_nodes(msh_t)
+    logger.debug("Checking for pinched nodes...")
+    has_pinched_nodes, e0_unique, e0_count, e1_unique, e1_count = check_pinched_nodes(
+        msh_t
+    )
     while has_pinched_nodes:
-        logger.debug('cleaning up pinched nodes...')
+        logger.debug("cleaning up pinched nodes...")
         start = time()
         cleanup_pinched_nodes(msh_t, e0_unique, e0_count, e1_unique, e1_count)
-        logger.debug(f'cleanup pinched took={time()-start}')
-        logger.debug('checking for additional pinched nodes...')
-        has_pinched_nodes, e0_unique, e0_count, e1_unique, e1_count = check_pinched_nodes(msh_t)
+        logger.debug(f"cleanup pinched took={time()-start}")
+        logger.debug("checking for additional pinched nodes...")
+        (
+            has_pinched_nodes,
+            e0_unique,
+            e0_count,
+            e1_unique,
+            e1_count,
+        ) = check_pinched_nodes(msh_t)
         if has_pinched_nodes is False:
             break
-    logger.debug('No additional pinched nodes found, continuing...')
+    logger.debug("No additional pinched nodes found, continuing...")
     # remove_quad4_from_tria3(msh_t)
 
 
 def split_bad_quality_quads(
-        msh_t,
-        cutoff=0.5,
-        ):
-
+    msh_t,
+    cutoff=0.5,
+):
     def angle_between(v1, v2):
         dot_product = np.dot(v1, v2)
         magnitude_product = norm(v1) * norm(v2)
@@ -570,11 +727,11 @@ def split_bad_quality_quads(
 
     to_split = []
     for quad_indices, quad_id in msh_t.quad4:
-        coords = msh_t.vert2['coord'][quad_indices]
+        coords = msh_t.vert2["coord"][quad_indices]
         angles = []
         for i in range(4):
-            prev_point = np.array(coords[(i-2) % 4])
-            curr_point = np.array(coords[(i-1) % 4])
+            prev_point = np.array(coords[(i - 2) % 4])
+            curr_point = np.array(coords[(i - 1) % 4])
             next_point = np.array(coords[i])
             prev_vector = curr_point - prev_point
             next_vector = next_point - curr_point
@@ -592,13 +749,14 @@ def split_bad_quality_quads(
 
     def calculate_triangle_quality(triangle):
         # Get the coordinates of the vertices
-        coords = msh_t.vert2['coord'][triangle]
+        coords = msh_t.vert2["coord"][triangle]
         # Define a function to calculate the angle between three points
 
         def angle(a, b, c):
             v1 = a - b
             v2 = c - b
             return angle_between(v1, v2)
+
         # Calculate the angles of the triangle
         angles = [
             angle(coords[0], coords[1], coords[2]),
@@ -608,7 +766,7 @@ def split_bad_quality_quads(
 
         # Define a function to calculate how close the triangle is to being equilateral
         def equilateral_quality(angles):
-            return -sum((angle - 60)**2 for angle in angles)
+            return -sum((angle - 60) ** 2 for angle in angles)
 
         # Calculate and return the equilateral quality of the triangle
         return equilateral_quality(angles)
@@ -623,8 +781,12 @@ def split_bad_quality_quads(
         triangle4 = [quad_indices[3], quad_indices[1], quad_indices[2]]
         triangle_set2 = [triangle3, triangle4]
         # Calculate the quality of each set of triangles by summing the quality of the individual triangles in the set
-        quality_set1 = sum(calculate_triangle_quality(triangle) for triangle in triangle_set1)
-        quality_set2 = sum(calculate_triangle_quality(triangle) for triangle in triangle_set2)
+        quality_set1 = sum(
+            calculate_triangle_quality(triangle) for triangle in triangle_set1
+        )
+        quality_set2 = sum(
+            calculate_triangle_quality(triangle) for triangle in triangle_set2
+        )
 
         # Select the set of triangles with the highest total quality
         if quality_set1 > quality_set2:
@@ -635,11 +797,13 @@ def split_bad_quality_quads(
             new_triangles.append(triangle_set2[1])
 
     # Assuming msh_t.tri3 is the container for triangles, add the new triangles to it
-    new_triangles = np.array([(el, 0) for el in new_triangles], dtype=jigsaw_msh_t.TRIA3_t)
+    new_triangles = np.array(
+        [(el, 0) for el in new_triangles], dtype=jigsaw_msh_t.TRIA3_t
+    )
     msh_t.tria3 = np.hstack([msh_t.tria3, new_triangles])
 
     # Remove the split quads from the quad4 container
-    msh_t.quad4 = msh_t.quad4[~to_split]    # New triangles container
+    msh_t.quad4 = msh_t.quad4[~to_split]  # New triangles container
 
 
 def wireframe(msh_t, ax=None, triplot_kwargs=None, quadplot_kwargs=None, **kwargs):
@@ -649,15 +813,21 @@ def wireframe(msh_t, ax=None, triplot_kwargs=None, quadplot_kwargs=None, **kwarg
     # Filter kwargs for triplot
     triplot_params = inspect.signature(triplot).parameters
     triplot_args = {k: v for k, v in kwargs.items() if k in triplot_params}
-    combined_triplot_kwargs = {**triplot_args, **triplot_kwargs}  # triplot_kwargs takes precedence
-    combined_triplot_kwargs.setdefault('ax', ax or plt.gca())
+    combined_triplot_kwargs = {
+        **triplot_args,
+        **triplot_kwargs,
+    }  # triplot_kwargs takes precedence
+    combined_triplot_kwargs.setdefault("ax", ax or plt.gca())
     triplot(msh_t, **combined_triplot_kwargs)
 
     # Filter kwargs for quadplot
     quadplot_params = inspect.signature(quadplot).parameters
     quadplot_args = {k: v for k, v in kwargs.items() if k in quadplot_params}
-    combined_quadplot_kwargs = {**quadplot_args, **quadplot_kwargs}  # quadplot_kwargs takes precedence
-    combined_quadplot_kwargs.setdefault('ax', ax or plt.gca())
+    combined_quadplot_kwargs = {
+        **quadplot_args,
+        **quadplot_kwargs,
+    }  # quadplot_kwargs takes precedence
+    combined_quadplot_kwargs.setdefault("ax", ax or plt.gca())
     quadplot(msh_t, **combined_quadplot_kwargs)
 
     return ax
@@ -681,50 +851,64 @@ def finalize_mesh(mesh, sieve=True):
         pass
     else:
         # TODO:
-        raise NotImplementedError(f'Unhandled sieve: expected None or bool but got {sieve}')
+        raise NotImplementedError(
+            f"Unhandled sieve: expected None or bool but got {sieve}"
+        )
 
     _msh_t = multipolygon_to_jigsaw_msh_t(mp)
 
-    in_poly, on_edge = inpoly2(mesh.vert2['coord'], _msh_t.vert2['coord'], _msh_t.edge2['index'])
+    in_poly, on_edge = inpoly2(
+        mesh.vert2["coord"], _msh_t.vert2["coord"], _msh_t.edge2["index"]
+    )
 
-    tria3_mask = np.any(~in_poly[mesh.tria3['index']], axis=1)
+    tria3_mask = np.any(~in_poly[mesh.tria3["index"]], axis=1)
 
     # tria3_idxs_take = np.where(~tria3_mask)[0]
-    tria3_index = mesh.tria3['index'][~tria3_mask, :]
+    tria3_index = mesh.tria3["index"][~tria3_mask, :]
     # tria3_index = mesh.tria3['index'].take(tria3_idxs_take)
     used_indexes, inverse = np.unique(tria3_index, return_inverse=True)
-    node_indexes = np.arange(mesh.vert2['coord'].shape[0])
+    node_indexes = np.arange(mesh.vert2["coord"].shape[0])
     isin = np.isin(node_indexes, used_indexes)
     # tria3_idxs = np.where(~isin)[0]
     vert2_idxs = np.where(isin)[0]
 
     df = pd.DataFrame(index=node_indexes).iloc[vert2_idxs].reset_index()
-    mapping = {v: k for k, v in df.to_dict()['index'].items()}
-    tria3_index = np.array([mapping[x] for x in used_indexes])[inverse].reshape(tria3_index.shape)
+    mapping = {v: k for k, v in df.to_dict()["index"].items()}
+    tria3_index = np.array([mapping[x] for x in used_indexes])[inverse].reshape(
+        tria3_index.shape
+    )
     mesh.vert2 = mesh.vert2.take(vert2_idxs, axis=0)
 
-    tria3_IDtag = mesh.tria3['IDtag'][~tria3_mask]
+    tria3_IDtag = mesh.tria3["IDtag"][~tria3_mask]
 
     # update value
     if len(mesh.value) > 0:
         mesh.value = mesh.value.take(vert2_idxs)
 
     mesh.tria3 = np.array(
-        [(tuple(indices), tria3_IDtag[i])
-         for i, indices in enumerate(tria3_index)],
-        dtype=jigsaw_msh_t.TRIA3_t)
+        [(tuple(indices), tria3_IDtag[i]) for i, indices in enumerate(tria3_index)],
+        dtype=jigsaw_msh_t.TRIA3_t,
+    )
 
-    print('Checking for pinched nodes...')
-    has_pinched_nodes, e0_unique, e0_count, e1_unique, e1_count = check_pinched_nodes(mesh)
+    print("Checking for pinched nodes...")
+    has_pinched_nodes, e0_unique, e0_count, e1_unique, e1_count = check_pinched_nodes(
+        mesh
+    )
     while has_pinched_nodes:
-        print('cleaning up pinched nodes...')
+        print("cleaning up pinched nodes...")
         start = time()
         cleanup_pinched_nodes(mesh, e0_unique, e0_count, e1_unique, e1_count)
-        print(f'cleanup pinched took={time()-start}')
-        print('checking for additional pinched nodes...')
-        has_pinched_nodes, e0_unique, e0_count, e1_unique, e1_count = check_pinched_nodes(mesh)
+        print(f"cleanup pinched took={time()-start}")
+        print("checking for additional pinched nodes...")
+        (
+            has_pinched_nodes,
+            e0_unique,
+            e0_count,
+            e1_unique,
+            e1_count,
+        ) = check_pinched_nodes(mesh)
         if has_pinched_nodes is False:
-            print('No additional pinched nodes found, continuing...')
+            print("No additional pinched nodes found, continuing...")
             break
 
     # cleanup_flat_triangles(mesh)
@@ -763,11 +947,8 @@ def finalize_mesh(mesh, sieve=True):
     # plt.show(block=True)
     return
 
-
     # gpd.GeoDataFrame([{'geometry': poly} for poly in mp.geoms], crs=mesh.crs).plot(facecolor='none', cmap='jet')
     # plt.show(block=True)
-
-
 
     # boundary_edges = list()
     # print('build mesh_to_tri')
@@ -781,8 +962,6 @@ def finalize_mesh(mesh, sieve=True):
     # start = time()
     # boundary_lines = linemerge(MultiLineString([LineString(x) for x in mesh.vert2['coord'][boundary_edges]]))
     # print(f'linemerge took {time()-start}')
-
-
 
     # print('polygonizing ... ')
     # start = time()
@@ -889,7 +1068,6 @@ def finalize_mesh(mesh, sieve=True):
 #     return
 
 
-
 def index_ring_collection(mesh):
 
     # find boundary edges using triangulation neighbors table,
@@ -898,11 +1076,7 @@ def index_ring_collection(mesh):
     tri = mesh_to_tri(mesh)
     idxs = np.vstack(list(np.where(tri.neighbors == -1))).T
     for i, j in idxs:
-        boundary_edges.append((
-            tri.triangles[i, j],
-            tri.triangles[i, (j+1) % 3]
-            ))
-
+        boundary_edges.append((tri.triangles[i, j], tri.triangles[i, (j + 1) % 3]))
 
     # import geopandas as gpd
     # from shapely.ops import linemerge, polygonize, LineString, MultiLineString
@@ -922,7 +1096,7 @@ def index_ring_collection(mesh):
     # gpd.GeoDataFrame([{'geometry': outer_polygon}]).plot(facecolor='none', cmap='jet')
     # plt.show()
     # exit()
-    from shapely.geometry import Polygon, Point
+    from shapely.geometry import Point, Polygon
 
     # from pyproj import CRS
     # gpd.GeoDataFrame([{'geometry': poly} for poly in polygonize(lines)], crs=CRS.from_epsg(4326)).plot(cmap='jet')
@@ -936,7 +1110,7 @@ def index_ring_collection(mesh):
     # print('make polygons')
     # data = []
     areas = list()
-    vertices = mesh.vert2['coord']
+    vertices = mesh.vert2["coord"]
     for index_ring in index_ring_collection:
         e0, e1 = [list(t) for t in zip(*index_ring)]
         # data.append({'geometry': Polygon(mesh.vert2['coord'][e0, :])})
@@ -950,10 +1124,7 @@ def index_ring_collection(mesh):
     areas.pop(idx)
     _id = 0
     _index_ring_collection = dict()
-    _index_ring_collection[_id] = {
-        'exterior': np.asarray(exterior),
-        'interiors': []
-        }
+    _index_ring_collection[_id] = {"exterior": np.asarray(exterior), "interiors": []}
     e0, e1 = [list(t) for t in zip(*exterior)]
     path = Path(vertices[e0 + [e0[0]], :], closed=True)
     while len(index_ring_collection) > 0:
@@ -970,9 +1141,11 @@ def index_ring_collection(mesh):
         real_interiors = list()
         for i, p_interior in reversed(list(enumerate(potential_interiors))):
             _p_interior = index_ring_collection[p_interior]
-            check = [index_ring_collection[_]
-                     for j, _ in reversed(list(enumerate(potential_interiors)))
-                     if i != j]
+            check = [
+                index_ring_collection[_]
+                for j, _ in reversed(list(enumerate(potential_interiors)))
+                if i != j
+            ]
             has_parent = False
             for _path in check:
                 e0, e1 = [list(t) for t in zip(*_path)]
@@ -984,8 +1157,9 @@ def index_ring_collection(mesh):
                 real_interiors.append(p_interior)
         # pop real rings from collection
         for i in reversed(sorted(real_interiors)):
-            _index_ring_collection[_id]['interiors'].append(
-                np.asarray(index_ring_collection.pop(i)))
+            _index_ring_collection[_id]["interiors"].append(
+                np.asarray(index_ring_collection.pop(i))
+            )
             areas.pop(i)
         # if no internal rings found, initialize next polygon
         if len(index_ring_collection) > 0:
@@ -994,9 +1168,9 @@ def index_ring_collection(mesh):
             areas.pop(idx)
             _id += 1
             _index_ring_collection[_id] = {
-                'exterior': np.asarray(exterior),
-                'interiors': []
-                }
+                "exterior": np.asarray(exterior),
+                "interiors": [],
+            }
             e0, e1 = [list(t) for t in zip(*exterior)]
             e0.append(e0[0])
             path = Path(vertices[e0, :], closed=True)
@@ -1007,7 +1181,7 @@ def outer_ring_collection(mesh):
     _index_ring_collection = index_ring_collection(mesh)
     outer_ring_collection = defaultdict()
     for key, ring in _index_ring_collection.items():
-        outer_ring_collection[key] = ring['exterior']
+        outer_ring_collection[key] = ring["exterior"]
     return outer_ring_collection
 
 
@@ -1020,7 +1194,7 @@ def inner_ring_collection(mesh):
     _index_ring_collection = index_ring_collection(mesh)
     inner_ring_collection = defaultdict()
     for key, rings in _index_ring_collection.items():
-        inner_ring_collection[key] = rings['interiors']
+        inner_ring_collection[key] = rings["interiors"]
     return inner_ring_collection
 
 
@@ -1036,11 +1210,13 @@ def signed_polygon_area(vertices):
 
 
 def vertices_around_vertex(mesh):
-    if mesh.mshID == 'euclidean-mesh':
+    if mesh.mshID == "euclidean-mesh":
+
         def append(geom):
-            for simplex in geom['index']:
+            for simplex in geom["index"]:
                 for i, j in permutations(simplex, 2):
                     vertices_around_vertex[i].add(j)
+
         vertices_around_vertex = defaultdict(set)
         append(mesh.tria3)
         append(mesh.quad4)
@@ -1064,27 +1240,30 @@ def vertices_around_vertex(mesh):
 
 def must_be_euclidean_mesh(f):
     def decorator(mesh):
-        if mesh.mshID.lower() != 'euclidean-mesh':
+        if mesh.mshID.lower() != "euclidean-mesh":
             msg = f"Not implemented for mshID={mesh.mshID}"
             raise NotImplementedError(msg)
         return f(mesh)
+
     return decorator
 
 
 @must_be_euclidean_mesh
 def elements(mesh):
     elements_id = list()
-    elements_id.extend(list(mesh.tria3['IDtag']))
-    elements_id.extend(list(mesh.quad4['IDtag']))
-    elements_id.extend(list(mesh.hexa8['IDtag']))
-    elements_id = range(1, len(elements_id)+1) \
-        if len(set(elements_id)) != len(elements_id) else elements_id
+    elements_id.extend(list(mesh.tria3["IDtag"]))
+    elements_id.extend(list(mesh.quad4["IDtag"]))
+    elements_id.extend(list(mesh.hexa8["IDtag"]))
+    elements_id = (
+        range(1, len(elements_id) + 1)
+        if len(set(elements_id)) != len(elements_id)
+        else elements_id
+    )
     elements = list()
-    elements.extend(list(mesh.tria3['index']))
-    elements.extend(list(mesh.quad4['index']))
-    elements.extend(list(mesh.hexa8['index']))
-    elements = {
-        elements_id[i]: indexes for i, indexes in enumerate(elements)}
+    elements.extend(list(mesh.tria3["index"]))
+    elements.extend(list(mesh.quad4["index"]))
+    elements.extend(list(mesh.hexa8["index"]))
+    elements = {elements_id[i]: indexes for i, indexes in enumerate(elements)}
     return elements
 
 
@@ -1095,7 +1274,7 @@ def faces_around_vertex(mesh):
     # y = np.array([xi+[-99999]*(length-len(xi)) for xi in _elements.values()])
     # print(y)
     faces_around_vertex = defaultdict(set)
-    for i, coord in enumerate(mesh.vert2['index']):
+    for i, coord in enumerate(mesh.vert2["index"]):
         np.isin(i, axis=0)
         faces_around_vertex[i].add()
 
@@ -1125,64 +1304,47 @@ def has_pinched_nodes(mesh):
         return False, unique, count
 
 
-
-def interpolate_hmat(mesh, hmat, method='spline', kx=1, ky=1, **kwargs):
+def interpolate_hmat(mesh, hmat, method="spline", kx=1, ky=1, **kwargs):
     assert isinstance(mesh, jigsaw_msh_t)
     assert isinstance(hmat, jigsaw_msh_t)
-    assert method in ['spline', 'linear', 'nearest']
-    kwargs.update({'kx': kx, 'ky': ky})
-    if method == 'spline':
-        values = RectBivariateSpline(
-            hmat.xgrid,
-            hmat.ygrid,
-            hmat.value.T,
-            **kwargs
-            ).ev(
-            mesh.vert2['coord'][:, 0],
-            mesh.vert2['coord'][:, 1])
+    assert method in ["spline", "linear", "nearest"]
+    kwargs.update({"kx": kx, "ky": ky})
+    if method == "spline":
+        values = RectBivariateSpline(hmat.xgrid, hmat.ygrid, hmat.value.T, **kwargs).ev(
+            mesh.vert2["coord"][:, 0], mesh.vert2["coord"][:, 1]
+        )
         mesh.value = np.array(
-            values.reshape((values.size, 1)),
-            dtype=jigsaw_msh_t.REALS_t)
+            values.reshape((values.size, 1)), dtype=jigsaw_msh_t.REALS_t
+        )
     else:
         raise NotImplementedError("Only 'spline' method is available")
 
 
-def tricontourf(
-    mesh,
-    ax=None,
-    show=False,
-    figsize=None,
-    extend='both',
-    **kwargs
-):
+def tricontourf(mesh, ax=None, show=False, figsize=None, extend="both", **kwargs):
     ax = ax or plt.gca()
     split_tria3 = get_tria3_from_split_quad4(mesh)
     ax.tricontourf(
-        mesh.vert2['coord'][:, 0],
-        mesh.vert2['coord'][:, 1],
-        split_tria3['index'],
+        mesh.vert2["coord"][:, 0],
+        mesh.vert2["coord"][:, 1],
+        split_tria3["index"],
         mesh.value.flatten(),
-        **kwargs)
+        **kwargs,
+    )
     return ax
 
 
 def triplot(
-    mesh,
-    ax=None,
-    show=False,
-    figsize=None,
-    color='k',
-    linewidth=0.3,
-    **kwargs
+    mesh, ax=None, show=False, figsize=None, color="k", linewidth=0.3, **kwargs
 ):
     ax = ax or plt.gca()
     ax.triplot(
-        mesh.vert2['coord'][:, 0],
-        mesh.vert2['coord'][:, 1],
-        mesh.tria3['index'],
+        mesh.vert2["coord"][:, 0],
+        mesh.vert2["coord"][:, 1],
+        mesh.tria3["index"],
         color=color,
         linewidth=linewidth,
-        **kwargs)
+        **kwargs,
+    )
     return ax
 
 
@@ -1195,11 +1357,11 @@ def quadplot(
     **kwargs,
 ):
     ax = ax or plt.gca()
-    if not hasattr(msh_t, 'quad4'):
+    if not hasattr(msh_t, "quad4"):
         return ax
     if len(msh_t.quad4) > 0:
         pc = PolyCollection(
-            msh_t.vert2['coord'][msh_t.quad4['index']],
+            msh_t.vert2["coord"][msh_t.quad4["index"]],
             facecolor=facecolor,
             edgecolor=edgecolor,
             linewidth=linewidth,
@@ -1209,22 +1371,15 @@ def quadplot(
     return ax
 
 
-def quadface(
-    mesh,
-    ax=None,
-    show=False,
-    figsize=None,
-    extend='both',
-    **kwargs
-):
+def quadface(mesh, ax=None, show=False, figsize=None, extend="both", **kwargs):
     # if len(self.quads) > 0:
     pc = PolyCollection(
-        mesh.vert2['coord'][mesh.quad4['index']],
+        mesh.vert2["coord"][mesh.quad4["index"]],
         # facecolor=facecolor,
         # edgecolor=edgecolor,
-        linewidth=0.07
+        linewidth=0.07,
     )
-    quad_value = np.mean(mesh.value.flatten()[mesh.quad4['index']], axis=1)
+    quad_value = np.mean(mesh.value.flatten()[mesh.quad4["index"]], axis=1)
     pc.set_array(quad_value)
     ax = ax or plt.gca()
     ax.add_collection(pc)
@@ -1233,96 +1388,106 @@ def quadface(
 
 def msh_t_to_grd(msh: jigsaw_msh_t) -> Dict:
 
-    src_crs = msh.crs if hasattr(msh, 'crs') else None
-    coords = msh.vert2['coord']
+    src_crs = msh.crs if hasattr(msh, "crs") else None
+    coords = msh.vert2["coord"]
     if src_crs is not None:
         EPSG_4326 = CRS.from_epsg(4326)
         if not src_crs.equals(EPSG_4326):
-            transformer = Transformer.from_crs(
-                src_crs, EPSG_4326, always_xy=True)
-            coords = np.vstack(
-                transformer.transform(coords[:, 0], coords[:, 1])).T
+            transformer = Transformer.from_crs(src_crs, EPSG_4326, always_xy=True)
+            coords = np.vstack(transformer.transform(coords[:, 0], coords[:, 1])).T
 
     desc = "EPSG:4326"
-    nodes = {i + 1: [tuple(p.tolist()), v] for i, (p, v) in enumerate(zip(coords, -msh.value))}
-    elements = {i + 1: v + 1 for i, v in enumerate(msh.tria3['index'])}
+    nodes = {
+        i + 1: [tuple(p.tolist()), v]
+        for i, (p, v) in enumerate(zip(coords, -msh.value))
+    }
+    elements = {i + 1: v + 1 for i, v in enumerate(msh.tria3["index"])}
     offset = len(elements)
-    elements.update({offset + i + 1: v + 1 for i, v in enumerate(msh.quad4['index'])})
+    elements.update({offset + i + 1: v + 1 for i, v in enumerate(msh.quad4["index"])})
 
-    return {'description': desc,
-            'nodes': nodes,
-            'elements': elements}
+    return {"description": desc, "nodes": nodes, "elements": elements}
 
 
 def grd_to_msh_t(_grd: Dict) -> jigsaw_msh_t:
 
     msh = jigsaw_msh_t()
     msh.ndims = +2
-    msh.mshID = 'euclidean-mesh'
-    id_to_index = {node_id: index for index, node_id
-                   in enumerate(_grd['nodes'].keys())}
-    triangles = [list(map(lambda x: id_to_index[x], element)) for element
-                 in _grd['elements'].values() if len(element) == 3]
-    quads = [list(map(lambda x: id_to_index[x], element)) for element
-             in _grd['elements'].values() if len(element) == 4]
-    msh.vert2 = np.array([(coord, 0) for coord, _ in _grd['nodes'].values()],
-                         dtype=jigsaw_msh_t.VERT2_t)
-    msh.tria3 = np.array([(index, 0) for index in triangles],
-                         dtype=jigsaw_msh_t.TRIA3_t)
-    msh.quad4 = np.array([(index, 0) for index in quads],
-                         dtype=jigsaw_msh_t.QUAD4_t)
-    value = [value for _, value in _grd['nodes'].values()]
-    msh.value = np.array(np.array(value).reshape((len(value), 1)),
-                         dtype=jigsaw_msh_t.REALS_t)
-    crs = _grd.get('crs')
+    msh.mshID = "euclidean-mesh"
+    id_to_index = {node_id: index for index, node_id in enumerate(_grd["nodes"].keys())}
+    triangles = [
+        list(map(lambda x: id_to_index[x], element))
+        for element in _grd["elements"].values()
+        if len(element) == 3
+    ]
+    quads = [
+        list(map(lambda x: id_to_index[x], element))
+        for element in _grd["elements"].values()
+        if len(element) == 4
+    ]
+    msh.vert2 = np.array(
+        [(coord, 0) for coord, _ in _grd["nodes"].values()], dtype=jigsaw_msh_t.VERT2_t
+    )
+    msh.tria3 = np.array(
+        [(index, 0) for index in triangles], dtype=jigsaw_msh_t.TRIA3_t
+    )
+    msh.quad4 = np.array([(index, 0) for index in quads], dtype=jigsaw_msh_t.QUAD4_t)
+    value = [value for _, value in _grd["nodes"].values()]
+    msh.value = np.array(
+        np.array(value).reshape((len(value), 1)), dtype=jigsaw_msh_t.REALS_t
+    )
+    crs = _grd.get("crs")
     if crs is not None:
         msh.crs = CRS.from_user_input(crs)
     return msh
 
 
 def msh_t_to_2dm(msh: jigsaw_msh_t):
-    coords = msh.vert2['coord']
-    src_crs = msh.crs if hasattr(msh, 'crs') else None
+    coords = msh.vert2["coord"]
+    src_crs = msh.crs if hasattr(msh, "crs") else None
     if src_crs is not None:
         EPSG_4326 = CRS.from_epsg(4326)
         if not src_crs.equals(EPSG_4326):
-            transformer = Transformer.from_crs(
-                src_crs, EPSG_4326, always_xy=True)
-            coords = np.vstack(
-                transformer.transform(coords[:, 0], coords[:, 1])).T
+            transformer = Transformer.from_crs(src_crs, EPSG_4326, always_xy=True)
+            coords = np.vstack(transformer.transform(coords[:, 0], coords[:, 1])).T
     return {
-            'ND': {i+1: (coord, msh.value[i, 0] if not
-                         np.isnan(msh.value[i, 0]) else -99999)
-                   for i, coord in enumerate(coords)},
-            'E3T': {i+1: index+1 for i, index
-                    in enumerate(msh.tria3['index'])},
-            'E4Q': {i+1: index+1 for i, index
-                    in enumerate(msh.quad4['index'])}
-        }
+        "ND": {
+            i + 1: (coord, msh.value[i, 0] if not np.isnan(msh.value[i, 0]) else -99999)
+            for i, coord in enumerate(coords)
+        },
+        "E3T": {i + 1: index + 1 for i, index in enumerate(msh.tria3["index"])},
+        "E4Q": {i + 1: index + 1 for i, index in enumerate(msh.quad4["index"])},
+    }
 
 
 def sms2dm_to_msh_t(_sms2dm: Dict) -> jigsaw_msh_t:
     msh = jigsaw_msh_t()
     msh.ndims = +2
-    msh.mshID = 'euclidean-mesh'
-    id_to_index = {node_id: index for index, node_id
-                   in enumerate(_sms2dm['ND'].keys())}
-    if 'E3T' in _sms2dm:
-        triangles = [list(map(lambda x: id_to_index[x], element)) for element
-                     in _sms2dm['E3T'].values()]
-        msh.tria3 = np.array([(index, 0) for index in triangles],
-                             dtype=jigsaw_msh_t.TRIA3_t)
-    if 'E4Q' in _sms2dm:
-        quads = [list(map(lambda x: id_to_index[x], element)) for element
-                 in _sms2dm['E4Q'].values()]
-        msh.quad4 = np.array([(index, 0) for index in quads],
-                             dtype=jigsaw_msh_t.QUAD4_t)
-    msh.vert2 = np.array([(coord, 0) for coord, _ in _sms2dm['ND'].values()],
-                         dtype=jigsaw_msh_t.VERT2_t)
-    value = [value for _, value in _sms2dm['ND'].values()]
-    msh.value = np.array(np.array(value).reshape((len(value), 1)),
-                         dtype=jigsaw_msh_t.REALS_t)
-    crs = _sms2dm.get('crs')
+    msh.mshID = "euclidean-mesh"
+    id_to_index = {node_id: index for index, node_id in enumerate(_sms2dm["ND"].keys())}
+    if "E3T" in _sms2dm:
+        triangles = [
+            list(map(lambda x: id_to_index[x], element))
+            for element in _sms2dm["E3T"].values()
+        ]
+        msh.tria3 = np.array(
+            [(index, 0) for index in triangles], dtype=jigsaw_msh_t.TRIA3_t
+        )
+    if "E4Q" in _sms2dm:
+        quads = [
+            list(map(lambda x: id_to_index[x], element))
+            for element in _sms2dm["E4Q"].values()
+        ]
+        msh.quad4 = np.array(
+            [(index, 0) for index in quads], dtype=jigsaw_msh_t.QUAD4_t
+        )
+    msh.vert2 = np.array(
+        [(coord, 0) for coord, _ in _sms2dm["ND"].values()], dtype=jigsaw_msh_t.VERT2_t
+    )
+    value = [value for _, value in _sms2dm["ND"].values()]
+    msh.value = np.array(
+        np.array(value).reshape((len(value), 1)), dtype=jigsaw_msh_t.REALS_t
+    )
+    crs = _sms2dm.get("crs")
     if crs is not None:
         msh.crs = CRS.from_user_input(crs)
     return msh
@@ -1333,10 +1498,92 @@ def sms2dm_to_msh_t(_sms2dm: Dict) -> jigsaw_msh_t:
 #     return transformer.transform(coord[0], coord[1])
 
 
+def calculate_angle(p1, p2, p3):
+    """Calculate the angle at p1 in the triangle formed by p1, p2, p3."""
+    v1 = p2 - p1
+    v2 = p3 - p1
+    dot_product = np.dot(v1, v2)
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    cos_angle = dot_product / (norm1 * norm2)
+    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+    return np.degrees(angle)
+
+
+def find_large_angles(coords, connectivity, threshold):
+    """Find triangles with angles larger than the threshold."""
+    large_angles = []
+    for i, tri in enumerate(connectivity):
+        p1, p2, p3 = coords[tri[0]], coords[tri[1]], coords[tri[2]]
+        angles = [
+            calculate_angle(p1, p2, p3),
+            calculate_angle(p2, p3, p1),
+            calculate_angle(p3, p1, p2),
+        ]
+        if any(angle > threshold for angle in angles):
+            large_angles.append((i, angles))
+    return large_angles
+
+
+def flip_edge(coords, connectivity, tri_idx, large_angle_idx):
+    """Flip the edge opposite to the large angle in the given triangle."""
+    tri = connectivity[tri_idx]
+    if large_angle_idx == 0:
+        edge = (tri[1], tri[2])
+        new_vertex = tri[0]
+    elif large_angle_idx == 1:
+        edge = (tri[2], tri[0])
+        new_vertex = tri[1]
+    else:
+        edge = (tri[0], tri[1])
+        new_vertex = tri[2]
+
+    # Find the neighboring triangle that shares this edge
+    neighbor_idx = -1
+    for i, other_tri in enumerate(connectivity):
+        if i != tri_idx and (edge[0] in other_tri and edge[1] in other_tri):
+            neighbor_idx = i
+            break
+
+    if neighbor_idx == -1:
+        return connectivity  # No neighboring triangle found
+
+    # Perform edge flip
+    neighbor_tri = connectivity[neighbor_idx]
+    shared_vertices = set(edge)
+    new_tri_1 = list(shared_vertices | {new_vertex})
+    opposite_vertex = list(set(neighbor_tri) - shared_vertices)[0]
+    new_tri_2 = list(shared_vertices | {opposite_vertex})
+
+    connectivity[tri_idx] = new_tri_1
+    connectivity[neighbor_idx] = new_tri_2
+
+    return connectivity
+
+
+def swap_large_angle_edges(msh_t, angle_degrees):
+    """Refine the mesh by flipping edges where angles exceed the threshold."""
+    _org_crs = msh_t.crs
+    reproject(msh_t, "epsg:6933")
+    coords = msh_t.vert2["coord"]
+    connectivity = msh_t.tria3["index"]
+    threshold = angle_degrees
+    large_angles = find_large_angles(coords, connectivity, threshold)
+    for tri_idx, angles in large_angles:
+        large_angle_idx = np.argmax(angles)
+        if angles[large_angle_idx] > threshold:
+            connectivity = flip_edge(coords, connectivity, tri_idx, large_angle_idx)
+    msh_t.tria3["index"] = np.array(
+        [(edges, 0) for edges in connectivity.reshape(-1, 3)],
+        dtype=jigsaw_msh_t.TRIA3_t,
+    )
+    reproject(msh_t, _org_crs)
+
+
 def reproject(
-        mesh: jigsaw_msh_t,
-        dst_crs: Union[str, CRS],
-        # nprocs=None,
+    mesh: jigsaw_msh_t,
+    dst_crs: Union[str, CRS],
+    # nprocs=None,
 ):
     src_crs = mesh.crs
     if not isinstance(dst_crs, CRS):
@@ -1346,77 +1593,63 @@ def reproject(
         src_crs = CRS.from_user_input(src_crs)
 
     start = time()
-    logger.debug(f'Begin transforming points from {mesh.crs} to {dst_crs}.')
+    logger.debug(f"Begin transforming points from {mesh.crs} to {dst_crs}.")
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-    x, y = transformer.transform(
-        mesh.vert2['coord'][:, 0], mesh.vert2['coord'][:, 1])
-    logger.debug(f'Transforming points took {time() - start}.')
-    mesh.vert2['coord'][:] = np.vstack([x, y]).T
+    x, y = transformer.transform(mesh.vert2["coord"][:, 0], mesh.vert2["coord"][:, 1])
+    logger.debug(f"Transforming points took {time() - start}.")
+    mesh.vert2["coord"][:] = np.vstack([x, y]).T
     mesh.crs = dst_crs
 
 
 def interpolate(src: jigsaw_msh_t, dst: jigsaw_msh_t, **kwargs):
-    if src.mshID == 'euclidean-grid' and dst.mshID == 'euclidean-mesh':
+    if src.mshID == "euclidean-grid" and dst.mshID == "euclidean-mesh":
         interpolate_euclidean_grid_to_euclidean_mesh(src, dst, **kwargs)
-    elif src.mshID == 'euclidean-mesh' and dst.mshID == 'euclidean-mesh':
+    elif src.mshID == "euclidean-mesh" and dst.mshID == "euclidean-mesh":
         interpolate_euclidean_mesh_to_euclidean_mesh(src, dst, **kwargs)
     else:
         raise NotImplementedError(
-            f'Not implemented type combination: source={src.mshID}, '
-            f'dest={dst.mshID}')
+            f"Not implemented type combination: source={src.mshID}, "
+            f"dest={dst.mshID}"
+        )
 
 
 def interpolate_euclidean_mesh_to_euclidean_mesh(
-        src: jigsaw_msh_t,
-        dst: jigsaw_msh_t,
-        method='linear',
-        fill_value=np.nan
+    src: jigsaw_msh_t, dst: jigsaw_msh_t, method="linear", fill_value=np.nan
 ):
     values = griddata(
-        src.vert2['coord'],
+        src.vert2["coord"],
         src.value.flatten(),
-        dst.vert2['coord'],
+        dst.vert2["coord"],
         method=method,
-        fill_value=fill_value
+        fill_value=fill_value,
     )
-    dst.value = np.array(
-        values.reshape(len(values), 1), dtype=jigsaw_msh_t.REALS_t)
+    dst.value = np.array(values.reshape(len(values), 1), dtype=jigsaw_msh_t.REALS_t)
 
 
 def interpolate_euclidean_grid_to_euclidean_mesh(
-        src: jigsaw_msh_t,
-        dst: jigsaw_msh_t,
-        bbox=[None, None, None, None],
-        kx=3,
-        ky=3,
-        s=0
+    src: jigsaw_msh_t, dst: jigsaw_msh_t, bbox=[None, None, None, None], kx=3, ky=3, s=0
 ):
     values = RectBivariateSpline(
-        src.xgrid,
-        src.ygrid,
-        src.value.T,
-        bbox=bbox,
-        kx=kx,
-        ky=ky,
-        s=s
-        ).ev(
-        dst.vert2['coord'][:, 0],
-        dst.vert2['coord'][:, 1])
-    dst.value = np.array(
-        values.reshape((values.size, 1)),
-        dtype=jigsaw_msh_t.REALS_t)
+        src.xgrid, src.ygrid, src.value.T, bbox=bbox, kx=kx, ky=ky, s=s
+    ).ev(dst.vert2["coord"][:, 0], dst.vert2["coord"][:, 1])
+    dst.value = np.array(values.reshape((values.size, 1)), dtype=jigsaw_msh_t.REALS_t)
 
 
 def test_filter_polygons_nested():
     from shapely.geometry import Polygon
+
     outer_polygon = Polygon([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)])
     hole1 = Polygon([(2, 2), (8, 2), (8, 8), (2, 8), (2, 2)])
     polygon2 = Polygon([(3, 3), (7, 3), (7, 7), (3, 7), (3, 3)])
     hole2 = Polygon([(4, 4), (6, 4), (6, 6), (4, 6), (4, 4)])
     polygon3 = Polygon([(4.5, 4.5), (5.5, 4.5), (5.5, 5.5), (4.5, 5.5), (4.5, 4.5)])
-    nested_polygon = Polygon(shell=outer_polygon.exterior.coords, holes=[hole1.exterior.coords, hole2.exterior.coords])
+    nested_polygon = Polygon(
+        shell=outer_polygon.exterior.coords,
+        holes=[hole1.exterior.coords, hole2.exterior.coords],
+    )
     polygons = [nested_polygon, outer_polygon, hole1, polygon2, hole2, polygon3]
     polygons = filter_polygons(polygons, CRS.from_epsg(3857))
-    gpd.GeoDataFrame(geometry=polygons, crs=CRS.from_epsg(3857)).plot(ax=plt.gca(), alpha=0.3, edgecolor='k')
+    gpd.GeoDataFrame(geometry=polygons, crs=CRS.from_epsg(3857)).plot(
+        ax=plt.gca(), alpha=0.3, edgecolor="k"
+    )
     plt.show(block=True)
-

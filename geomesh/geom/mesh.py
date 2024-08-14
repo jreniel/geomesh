@@ -6,7 +6,6 @@ from jigsawpy import jigsaw_msh_t
 from shapely import ops
 from shapely.geometry import Polygon, MultiPolygon
 
-from geomesh.figures import figure
 from geomesh.geom.base import BaseGeom
 from geomesh.mesh.base import BaseMesh
 from geomesh.mesh.mesh import Mesh

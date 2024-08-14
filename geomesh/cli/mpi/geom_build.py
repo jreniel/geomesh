@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from time import time
@@ -7,7 +6,6 @@ from typing import List
 from typing import Optional
 from typing import Union
 import argparse
-import asyncio
 import hashlib
 import inspect
 import json
@@ -18,16 +16,14 @@ import sys
 import tempfile
 import warnings
 
-from colored_traceback.colored_traceback import Colorizer
 from dask_geopandas.hilbert_distance import _hilbert_distance
 from mpi4py import MPI
 from mpi4py.futures import MPICommExecutor
 from pydantic import BaseModel
-# from scipy.optimize import curve_fit
 from shapely import ops
+from shapely import unary_union
 from shapely.geometry import LineString
-from shapely.geometry import LinearRing
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import MultiPolygon
 import dask_geopandas as dgpd
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -133,11 +129,9 @@ class GeomConfig(BaseModel):
         return base_geom
 
     def build_clipped_raster_geom_gdf_mpi(self, comm, output_rank=None, cache_directory=None):
+        root_rank = 0 if output_rank is None else output_rank
         raster_geom_gdf = self.build_raster_geom_gdf_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
-        with MPICommExecutor(
-                comm,
-                root=0 if output_rank is None else output_rank
-                ) as executor:
+        with MPICommExecutor(comm, root=root_rank) as executor:
             if executor is not None:
                 raster_geom_envelopes = gpd.GeoDataFrame(
                         geometry=raster_geom_gdf.geometry.envelope,
@@ -175,9 +169,8 @@ class GeomConfig(BaseModel):
                 # raster_geom_gdf = raster_geom_gdf[raster_geom_gdf.geometry.is_valid]
                 # verify
         if output_rank is None:
-            return comm.bcast(raster_geom_gdf, root=0)
-        else:
-            return raster_geom_gdf
+            return comm.bcast(raster_geom_gdf, root=root_rank)
+        return raster_geom_gdf
 
     def _apply_sieve_to_gdf(self, geom_gdf):
         if geom_gdf is not None:
@@ -191,24 +184,68 @@ class GeomConfig(BaseModel):
                 geom_gdf.drop(columns=['area'], inplace=True)
         return geom_gdf
 
-
-
     def build_combined_geoms_gdf_mpi(self, comm, output_rank=None, cache_directory=None):
-        if cache_directory:
+        """
+        Builds combined geoms_gdf using MPI comm.
+        """
+        root_rank = 0 if output_rank is None else output_rank
+
+        if cache_directory is not None:
             cached_filepath = self._get_final_geom_gdf_feather_path(comm, cache_directory)
-            if cached_filepath.is_file() and (output_rank is None or comm.Get_rank() == output_rank):
-                return self._apply_sieve_to_gdf(gpd.read_feather(cached_filepath))
-        # if self.method == 'dask' and comm.Get_size() < 3:
-        #     raise ValueError("`method: dask` requires the use of 3 or more tasks.")
-        final_geom_gdf = self._build_final_raster_geom_gdf_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
-        should_write_cache = cache_directory and (output_rank is None or comm.Get_rank() == output_rank)
-        if should_write_cache:
-            final_geom_gdf.to_feather(cached_filepath)
+            if cached_filepath.is_file():
+                if comm.Get_rank() == root_rank:
+                    logger.debug("Loading geom_gdf from cache: %s", str(cached_filepath))
+                    geom_gdf = gpd.read_feather(cached_filepath)
+                else:
+                    geom_gdf = None
+            else:
+                geom_gdf = self._build_final_raster_geom_gdf_mpi(comm, output_rank=root_rank, cache_directory=cache_directory)
+                if comm.Get_rank() == root_rank and geom_gdf is not None:
+                    geom_gdf.to_feather(cached_filepath)
+        else:
+            geom_gdf = self._build_final_raster_geom_gdf_mpi(comm, output_rank=root_rank, cache_directory=cache_directory)
 
-        if final_geom_gdf is not None:
-            final_geom_gdf = self._apply_sieve_to_gdf(final_geom_gdf)
+        if geom_gdf is not None:
+            geom_gdf = self._apply_sieve_to_gdf(geom_gdf)
 
-        return final_geom_gdf if output_rank is None or comm.Get_rank() == output_rank else None
+        if output_rank is None:
+            return comm.bcast(geom_gdf, root=root_rank)
+        return geom_gdf
+
+
+
+        # geom_gdf = None
+        # if cache_directory is not None:
+        #     cached_filepath = self._get_final_geom_gdf_feather_path(comm, cache_directory)
+        #     if cached_filepath.is_file():
+        #         if comm.Get_rank() == root_rank:
+        #             geom_gdf = gpd.read_feather(cached_filepath)
+        #         else:
+        #             geom_gdf = None
+
+        # final_geom_gdf = self._build_final_raster_geom_gdf_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
+        # should_write_cache = cache_directory and (output_rank is None or comm.Get_rank() == output_rank)
+        # if should_write_cache:
+        #     final_geom_gdf.to_feather(cached_filepath)
+
+
+
+
+                # if output_rank is None comm.Get_rank() == output_rank:
+                #     # Only one rank returns the cached file, others continue with subsequent code
+                #     return self._apply_sieve_to_gdf(gpd.read_feather(cached_filepath))
+                # else:
+                #     return None
+
+        # final_geom_gdf = self._build_final_raster_geom_gdf_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
+        # should_write_cache = cache_directory and (output_rank is None or comm.Get_rank() == output_rank)
+        # if should_write_cache:
+        #     final_geom_gdf.to_feather(cached_filepath)
+
+        # if final_geom_gdf is not None:
+        #     final_geom_gdf = self._apply_sieve_to_gdf(final_geom_gdf)
+
+        # return final_geom_gdf if output_rank is None or comm.Get_rank() == output_rank else None
 
     @staticmethod
     def _build_raster_geom_gdf(
@@ -269,7 +306,7 @@ class GeomConfig(BaseModel):
         raster_geom_gdf = cls._build_raster_geom_gdf(raster_opts, raster_geom_kwargs, get_multipolygon_kwargs)
         raster_geom_gdf.to_feather(cached_filepath)
         return raster_geom_gdf
-    
+
     # @staticmethod
     # def _dask_mpi_core_init_wrapper(
     #         comm,
@@ -312,6 +349,7 @@ class GeomConfig(BaseModel):
 
     def _build_final_raster_geom_gdf_mpi(self, comm, output_rank=None, cache_directory=None):
 
+        root_rank = 0 if output_rank is None else output_rank
         def split_gdf(gdf):
             exterior_rings_gdf = gpd.GeoDataFrame(
                     geometry=list(gdf.to_crs("epsg:6933").geometry.apply(self._polygon_to_buffered_edges).to_crs(gdf.crs)),
@@ -349,14 +387,10 @@ class GeomConfig(BaseModel):
             gdf = gdf.loc[joined[~joined.index_right.isna()].index.unique()]
             return gdf, excluded
 
-        gdf = self.build_clipped_raster_geom_gdf_mpi(comm, output_rank=output_rank, cache_directory=cache_directory)
+        gdf = self.build_clipped_raster_geom_gdf_mpi(comm, output_rank=root_rank, cache_directory=cache_directory)
         if gdf is not None:
             gdf = gdf.to_crs("epsg:6933")
-        from shapely import unary_union
-        with MPICommExecutor(
-                comm,
-                root=0 if output_rank is None else output_rank
-                ) as executor:
+        with MPICommExecutor(comm, root=root_rank) as executor:
             if executor is not None:
                 excluded = []
                 start = time()
@@ -431,9 +465,8 @@ class GeomConfig(BaseModel):
 
         comm.barrier()
         if output_rank is None:
-            return comm.bcast(gdf, root=0)
-        else:
-            return gdf
+            return comm.bcast(gdf, root=root_rank)
+        return gdf
 
     def _get_final_geom_gdf_feather_path(self, comm, cache_directory):
         if comm.Get_rank() == 0:

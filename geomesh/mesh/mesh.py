@@ -58,7 +58,14 @@ class Rings:
         return self().loc[self()["type"] == "interior"]
 
     def sorted(self):
+
         mp = utils.get_geom_msh_t_from_msh_t_as_mp(self.mesh.msh_t)
+
+        # verify:
+        # gpd.GeoDataFrame(geometry=[mp]).plot(ax=plt.gca())
+        # plt.show()
+        # breakpoint()
+
         sorted_rings = {}
         tree = KDTree(self.mesh.coord)
         # on_edge = np.where(on_edge)
@@ -737,7 +744,7 @@ class Mesh(BaseMesh):
     # vertices_topo_sorted = graph.topological_sort()
     # edge_tuples = [(u, v) for u, v in zip(vertices_topo_sorted[0:], vertices_topo_sorted[1:])]
     # print(np.array(edge_tuples))
-    # Create an adjacency matrix to find the next value fast 
+    # Create an adjacency matrix to find the next value fast
     # adjacency_matrix = {pair[0]: pair for pair in edges}
     # The first element can be found being the first element of the pair not
     # present in the second elements
@@ -745,7 +752,7 @@ class Mesh(BaseMesh):
 
 
     # while adjacency_matrix:
-    #     # sorted_pairs[-1][1] takes the second element of 
+    #     # sorted_pairs[-1][1] takes the second element of
     #     # the last pair inserted
     #     try:
     #         sorted_pairs.append(adjacency_matrix.pop(sorted_pairs[-1][1]))
@@ -771,7 +778,7 @@ class Mesh(BaseMesh):
         # offset = current_pos + 1
         # if row_e1 in e0[offset:]:
         #     return offset + e0[offset:].index(row_e1)
-        # elif 
+        # elif
         # else:
         #     raise ValueError(f'{row_e1} not in reamining e0')
         # elif edge[
@@ -786,7 +793,7 @@ class Mesh(BaseMesh):
     #     elif ordered_edges[0][0] in e0:
     #         idx = e0.index(ordered_edges[0][0])
     #         ordered_edges.insert(0, list(reversed(edges.pop(idx))))
-        
+
 
 
     # edges.sort(key=index_getter)
@@ -919,7 +926,7 @@ class Mesh(BaseMesh):
 
 
 def edges_to_rings(edges):
-    
+
 
     if len(edges) == 0:
         return edges

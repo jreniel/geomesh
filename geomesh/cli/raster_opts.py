@@ -1,3 +1,4 @@
+from functools import lru_cache
 from glob import glob
 from pathlib import Path
 from typing import Dict, Generator
@@ -364,6 +365,7 @@ def get_bbox_from_request(raster_path, request_opts):
     return bbox
 
 
+@lru_cache
 def transform_bbox(bbox, bbox_crs, dst_crs):
     (xmin, xmax), (ymin, ymax) = Transformer.from_crs(bbox_crs, dst_crs, always_xy=True
                                                       ).transform([bbox.xmin, bbox.xmax], [bbox.ymin, bbox.ymax])
