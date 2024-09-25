@@ -992,7 +992,6 @@ class QuadsConfig(BaseModel):
         root_rank = 0 if output_rank is None else output_rank
         if cache_directory is not None:
             cached_filepath = self._get_final_quads_gdf_feather_path(comm, cache_directory)
-            cached_filepath.unlink(missing_ok=True)
             if cached_filepath.is_file():
                 if comm.Get_rank() == root_rank:
                     logger.debug("Loading quads_gdf from cache: %s", str(cached_filepath))

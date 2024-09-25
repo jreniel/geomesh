@@ -343,7 +343,6 @@ class MeshConfig(BaseModel):
             logger.debug("quads is None")
             return self.get_base_mesh_mpi(comm, output_rank=root_rank, cache_directory=cache_directory)
         if cache_directory is not None:
-            logger.debug("quads is not None and cache_directory is not None")
             cached_filepath = self._get_quads_combined_msh_t_path(comm, cache_directory)
             if cached_filepath.is_file():
                 logger.debug("The final output_msh_t is in cache")
@@ -368,7 +367,6 @@ class MeshConfig(BaseModel):
                     with open(cached_filepath, "wb") as fh:
                         pickle.dump(output_msh_t, fh)
         else:
-            logger.debug("quads is not None and cache_directory is None")
             output_msh_t = self.get_base_mesh_mpi(comm, output_rank=root_rank)
             output_msh_t = self.quads.build_spliced_msh_t_mpi(comm, output_msh_t, output_rank=root_rank)
 

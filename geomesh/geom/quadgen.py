@@ -3947,7 +3947,7 @@ class Quads:
             from shapely.ops import transform
             from pyproj import Transformer
             del bnd_mp, joined
-            def get_msh_t_vertices():
+            def get_msh_t_vertices(quad_vertices, crs):
                 # with Pool(cpu_count()) as pool:
                 #     result = pool.map(
                 #                 self._get_min_distance_chunk,
@@ -3980,20 +3980,32 @@ class Quads:
 
                 # IN lat/lon flot32 eps is 0.164 mm and float16.eps is ~1.34 meters
                 # Using large epsilon (~1 meter) avoids very narrow triangles.
-                eps = 0.25*np.finfo(np.float16).eps if msh_t.crs.is_geographic else 0.25
-                # eps = .
+                # eps = 0.25*np.finfo(np.float16).eps if msh_t.crs.is_geographic else 0.25
+                # eps = 30.
                 # msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=list(map(lambda x: Point(x).buffer(eps), msh_t.vert2["coord"].tolist())), crs=msh_t.crs)
                 msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=[Point(x) for x in msh_t.vert2["coord"]], crs=msh_t.crs).to_crs("epsg:6933")
-                msh_t_vert2_buffered_gdf["geometry"] = msh_t_vert2_buffered_gdf.geometry.map(lambda x: x.buffer(eps))
+                msh_t_vert2_buffered_gdf["geometry"] = msh_t_vert2_buffered_gdf.geometry.map(lambda x: x.buffer(5.))
                 joined = gpd.sjoin(
                         msh_t_vert2_buffered_gdf,
-                        # quads_poly_buffered,
                         quads_poly_gdf.to_crs("epsg:6933"),
                         how='left',
                         predicate='intersects',
                         # predicate='within',
                         )
-                return msh_t.vert2["coord"][joined[joined.index_right.isna()].index.unique(), :].tolist()
+                msh_t_vertices = msh_t.vert2["coord"][joined[joined.index_right.isna()].index.unique(), :]
+                transformer = Transformer.from_crs(msh_t.crs, "epsg:6933", always_xy=True)
+                msh_t_vertices = np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
+                distances, indices = KDTree(quad_vertices).query(msh_t_vertices)
+                # breakpoint()
+                msh_t_vertices = msh_t_vertices[np.where(distances > 10.)[0], :]
+                transformer = Transformer.from_crs("epsg:6933", msh_t.crs, always_xy=True)
+                return np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
+
+
+
+
+
+
             vertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs("epsg:6933"))
             vertices = np.array(vertices)
             elements = np.array(elements)
@@ -4018,12 +4030,19 @@ class Quads:
                 distances, indices = KDTree(vertices).query(vertices, k=2)
                 distances = distances[:, 1]
                 indices = indices[:, 1]
-            transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
-            vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
             print("begin get_msh_t_vertices", flush=True)
+
+
+            filtered_base_mesh_vertices = get_msh_t_vertices(vertices, "epsg:6933")
+
+            transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
+            quad_vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
+
+
+
             vertices = np.vstack([
-                vertices,
-                np.array(get_msh_t_vertices())
+                quad_vertices,
+                filtered_base_mesh_vertices,
                 ])
             del quads_poly_gdf
             # new_vertices = np.array(transformer.transform(new_vertices[:, 0], new_vertices[:, 1])).T
@@ -4212,45 +4231,45 @@ class Quads:
             print("begin getting centroid based elements", flush=True)
             vertices, elements, crs = get_centroid_based_elements()
 
-            def orient_ccw(indices):
-                # Get the actual coordinates
-                points = vertices[indices]
+            # def orient_ccw(indices):
+            #     # Get the actual coordinates
+            #     points = vertices[indices]
 
-                # Calculate the cross product of vectors (p2 - p1) and (p3 - p1)
-                v1 = points[1] - points[0]
-                v2 = points[2] - points[0]
-                cross_product = np.cross(v1, v2)
+            #     # Calculate the cross product of vectors (p2 - p1) and (p3 - p1)
+            #     v1 = points[1] - points[0]
+            #     v2 = points[2] - points[0]
+            #     cross_product = np.cross(v1, v2)
 
-                # If cross product is negative, reverse the order of points
-                if cross_product < 0:
-                    return indices[::-1]
-                return indices
+            #     # If cross product is negative, reverse the order of points
+            #     if cross_product < 0:
+            #         return indices[::-1]
+            #     return indices
 
 
-            vertices = np.array(Transformer.from_crs(crs, "epsg:6933", always_xy=True).transform(*vertices.T)).T
-            threshold = 3.
-            distances, indices = KDTree(vertices).query(vertices, k=2)
-            distances = distances[:, 1]
-            indices = indices[:, 1]
-            while distances.min() < threshold:
-                print("doing iter")
-                _idxs = np.where(distances <= threshold)[0]
-                node_indices = np.arange(vertices.shape[0])[_idxs]
-                close_pairs = indices[_idxs]
-                mask = node_indices < close_pairs
-                node_indices = node_indices[mask]
-                close_pairs = close_pairs[mask]
-                mapping = np.arange(vertices.shape[0])
-                mapping[close_pairs] = node_indices
-                elements = mapping[elements]
-                is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 3, arr=elements, axis=1)
-                elements = elements[~is_collapsed]
-                elements = np.apply_along_axis(orient_ccw, axis=1, arr=elements)
-                vertices, elements = self._cleanup_isolates(vertices, elements)
-                distances, indices = KDTree(vertices).query(vertices, k=2)
-                distances = distances[:, 1]
-                indices = indices[:, 1]
-                print(distances.min())
+#             vertices = np.array(Transformer.from_crs(crs, "epsg:6933", always_xy=True).transform(*vertices.T)).T
+#             threshold = 3.
+#             distances, indices = KDTree(vertices).query(vertices, k=2)
+#             distances = distances[:, 1]
+#             indices = indices[:, 1]
+#             while distances.min() < threshold:
+#                 print("doing iter")
+#                 _idxs = np.where(distances <= threshold)[0]
+#                 node_indices = np.arange(vertices.shape[0])[_idxs]
+#                 close_pairs = indices[_idxs]
+#                 mask = node_indices < close_pairs
+#                 node_indices = node_indices[mask]
+#                 close_pairs = close_pairs[mask]
+#                 mapping = np.arange(vertices.shape[0])
+#                 mapping[close_pairs] = node_indices
+#                 elements = mapping[elements]
+#                 is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 3, arr=elements, axis=1)
+#                 elements = elements[~is_collapsed]
+#                 elements = np.apply_along_axis(orient_ccw, axis=1, arr=elements)
+#                 vertices, elements = self._cleanup_isolates(vertices, elements)
+#                 distances, indices = KDTree(vertices).query(vertices, k=2)
+#                 distances = distances[:, 1]
+#                 indices = indices[:, 1]
+#                 print(distances.min())
             # transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
             # vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
             # print("begin get_msh_t_vertices", flush=True)
@@ -4260,7 +4279,7 @@ class Quads:
             #     ])
 
             # convert into the final_gdf and return
-            vertices = np.array(Transformer.from_crs("epsg:6933", crs, always_xy=True).transform(*vertices.T)).T
+            # vertices = np.array(Transformer.from_crs("epsg:6933", crs, always_xy=True).transform(*vertices.T)).T
             return vertices, elements, crs
             # nprocs = cpu_count()
             # chunksize = len(vertices) // nprocs
@@ -4392,18 +4411,19 @@ class Quads:
             vertices, elements, crs = get_conforming_tri_mesh_gdf()
             # output_msh_t = self.jigsaw_msh_t_from_nodes_elements(*poly_gdf_to_elements(final_mesh_gdf), crs=final_mesh_gdf.crs)
             output_msh_t = self.jigsaw_msh_t_from_nodes_elements(vertices, elements, crs=crs)
+
             # del final_mesh_gdf
             print("cleanup pinched nodes", flush=True)
             utils.cleanup_pinched_nodes_iter(output_msh_t)
 
-#             import pickle
-#             with open("final_output_msh_t_with_negative_elements.pkl", "wb") as file:
-#                 pickle.dump(output_msh_t, file)
+            # import pickle
+            # with open("final_output_msh_t_with_skew_elements.pkl", "wb") as file:
+            #     pickle.dump(output_msh_t, file)
 
-#             raise
+            # raise
 
 #             utils.ensure_ccw_triangles(output_msh_t)
-            # self._fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(output_msh_t)
+            self._fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(output_msh_t)
             # print("split bad quality quads", flush=True)
             # utils.split_bad_quality_quads(output_msh_t)
             # print("swap large angle edges", flush=True)
@@ -4412,14 +4432,13 @@ class Quads:
         print("begin generating output_msh_t", flush=True)
         return get_output_msh_t()
 
-    @classmethod
-    def _fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(cls, output_msh_t):
-
-        original_crs = output_msh_t.crs
-        utils.reproject(output_msh_t, "epsg:6933")
-        coord = output_msh_t.vert2["coord"]
-        index = output_msh_t.tria3["index"]
-        elem_nodes = coord[index]
+    @staticmethod
+    def _compute_skewness(output_msh_t):
+        vert2 = output_msh_t.vert2["coord"]
+        transformer = Transformer.from_crs(output_msh_t.crs, "epsg:6933", always_xy=True)
+        vert2 = np.array(transformer.transform(vert2[:, 0], vert2[:, 1])).T
+        tria3 = output_msh_t.tria3["index"]
+        elem_nodes = vert2[tria3]
         edge_dx_dy = np.abs(elem_nodes - np.roll(elem_nodes, shift=-1, axis=1))
         euclidean_distances = np.sqrt(np.sum(np.square(edge_dx_dy), axis=2))
 
@@ -4429,96 +4448,82 @@ class Quads:
 
         # Calculate the area of each triangle using the cross product (in 2D)
         area = 0.5 * np.abs(vec_AB[:, 0] * vec_AC[:, 1] - vec_AB[:, 1] * vec_AC[:, 0])
-        equivalent_radius = area / np.pi
+        equivalent_radius = np.abs(area) / np.pi
         row_wise_max = np.max(euclidean_distances, axis=1)
         skewness = row_wise_max / equivalent_radius
+        return skewness
 
-        row_wise_min_dist = np.min(euclidean_distances, axis=1)
+    @classmethod
+    def _fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(cls, output_msh_t, tol=60.):
 
-        # Calculate the cosine of angles using the dot product formula
-        cos_angle_A = (np.sum(vec_AB * vec_AC, axis=1) /
-                      (np.linalg.norm(vec_AB, axis=1) * np.linalg.norm(vec_AC, axis=1)))
-        cos_angle_B = (np.sum(-vec_AB * (elem_nodes[:, 2, :] - elem_nodes[:, 1, :]), axis=1) /
-                      (np.linalg.norm(vec_AB, axis=1) * np.linalg.norm(elem_nodes[:, 2, :] - elem_nodes[:, 1, :], axis=1)))
-        cos_angle_C = (np.sum(-vec_AC * (elem_nodes[:, 1, :] - elem_nodes[:, 2, :]), axis=1) /
-                      (np.linalg.norm(vec_AC, axis=1) * np.linalg.norm(elem_nodes[:, 1, :] - elem_nodes[:, 2, :], axis=1)))
+        skewness = cls._compute_skewness(output_msh_t)
+        print(f"initial skewness {skewness.max()=}", flush=True)
+        while np.any(skewness > tol):
+            tria3 = output_msh_t.tria3["index"]
+            vert2 = output_msh_t.vert2["coord"]
+            mask = skewness > tol
+            element_index = np.where(mask)
+            participant_node_indexes = np.array(list(set(tria3[element_index].flatten().tolist())))
+            matches = np.isin(tria3, participant_node_indexes)
+            matching_row_indices = np.any(matches, axis=1)
+            matching_rows = np.where(matching_row_indices)[0]
+            rows_to_keep = np.where(~matching_row_indices)[0]
+            triangles = [Polygon(x) for x in [vert2[tria3[this_index]] for this_index in matching_rows]]
+            tria_to_fix = gpd.GeoDataFrame(geometry=triangles, crs=output_msh_t.crs)
+            mps_to_triangulate = tria_to_fix.unary_union
+            if isinstance(mps_to_triangulate, Polygon):
+                mps_to_triangulate = MultiPolygon([mps_to_triangulate])
+            new_trias = []
+            tree = KDTree(vert2)
+            for i, poly in enumerate(mps_to_triangulate.geoms):
+                boundary = poly.boundary
+                # print(boundary)
+                boundary = simplify(boundary, np.finfo(np.float32).eps)
 
-        # Calculate angles in degrees
-        angle_A = np.degrees(np.arccos(np.clip(cos_angle_A, -1.0, 1.0)))
-        angle_B = np.degrees(np.arccos(np.clip(cos_angle_B, -1.0, 1.0)))
-        angle_C = np.degrees(np.arccos(np.clip(cos_angle_C, -1.0, 1.0)))
+                if isinstance(boundary, LineString):
+                    boundary = MultiLineString([boundary])
 
-        # get mask for any row with angle > 175 degrees
-        mask_angle_greater_175 = np.any(np.vstack([angle_A, angle_B, angle_C]) > 175, axis=0)
+                if isinstance(boundary, MultiLineString):
+                    for this_bnd in boundary.geoms:
+                        tria3 = output_msh_t.tria3["index"]
+                        vert2 = output_msh_t.vert2["coord"]
+                        new_vertices, new_elements = cls._get_new_trias_vert_ele(this_bnd)
+                        ii = tree.query(new_vertices)[1]
+                        # Directly remap new_elements to vert2 indices
+                        renumbered_elements = ii[new_elements]
 
-        # get mask for any row with angle < 5 degrees
-        mask_angle_less_than_5 = np.any(np.vstack([angle_A, angle_B, angle_C]) < 5, axis=0)
+                        mask = np.apply_along_axis(lambda x: len(np.unique(x)) == 3, arr=renumbered_elements, axis=1)
+                        renumbered_elements = renumbered_elements[mask]
+                        new_trias.append(renumbered_elements)
 
-        # Calculate the angles
 
-        # get mask for any row with angle > 175
+#                         # Apply the mapping to new_elements
+#                         renumbered_elements = mapping[new_elements]
+#                         mask = np.apply_along_axis(lambda x: len(np.unique(x)) == 3, arr=renumbered_elements, axis=1)
+#                         renumbered_elements = renumbered_elements[mask]
+#                         new_trias.append(renumbered_elements)
 
-        # get mas for any row with angle < 5
+                else:
+                    raise NotImplementedError(f"{type(boundary)=}\n{boundary=}")
 
-        mask = np.logical_or(skewness > 60., row_wise_min_dist < 1.)
-        # mask = np.logical_or(mask, mask_angle_greater_175)
-        # mask = np.logical_or(mask, mask_angle_less_than_5)
-        element_index = np.where(mask)
-        participant_node_indexes = np.array(list(set(index[element_index].flatten().tolist())))
-        matches = np.isin(index, participant_node_indexes)
-        matching_row_indices = np.any(matches, axis=1)
-        matching_rows = np.where(matching_row_indices)[0]
-
-        with Pool(cpu_count()) as pool:
-            triangles = pool.map(Polygon, [coord[index[this_index]] for this_index in matching_rows])
-
-        the_uus = ops.unary_union(triangles)
-        non_matching_row_indices = np.any(~matches, axis=1)
-        non_matching_rows = np.where(non_matching_row_indices)[0]
-        # remaining_index = index[non_matching_rows, :]
-
-        if isinstance(the_uus, Polygon):
-            the_uus = MultiPolygon([the_uus])
-        tree = KDTree(coord)
-        new_trias = []
-        for i, poly in enumerate(the_uus.geoms):
-            boundary = poly.boundary
-            t = cdt.Triangulation(
-                    cdt.VertexInsertionOrder.AS_PROVIDED,
-                    cdt.IntersectingConstraintEdges.RESOLVE,
-                    0.
+            output_msh_t.tria3 = output_msh_t.tria3.take(rows_to_keep)
+            new_trias = np.array(
+                    [(e, 0) for e in np.vstack(new_trias)],
+                    dtype=jigsaw_msh_t.TRIA3_t
                     )
-            if not hasattr(boundary, "geoms"):
-                coords = boundary.coords
-            else:
-                largest_geom = max(boundary.geoms, key=lambda bnd: bnd.length)
-                coords = largest_geom.coords
+            output_msh_t.tria3 = np.hstack(
+                    [
+                        output_msh_t.tria3,
+                        new_trias
+                    ]
+                )
 
-            edges = [(i, (i + 1) % len(coords)) for i in range(len(coords))]
-            coords, edges = cls._clean_and_renumber(coords, edges)
-            t.insert_vertices([cdt.V2d(*coord) for coord in coords])
-            try:
-                t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in edges])
-            except RuntimeError:
-                print(np.array(coords))
-                print(np.array(coords).shape[0])
-                print(list(set(np.array(coords).tolist())))
-                print(len(list(set(np.array(coords).tolist()))))
+            utils.cleanup_isolates(output_msh_t)
+            skewness = cls._compute_skewness(output_msh_t)
+            print(f"{skewness.max()=}", flush=True)
 
-                raise
-            t.erase_outer_triangles_and_holes()
-            vertices = np.array([(v.x, v.y) for v in t.vertices])
-            _, ii = tree.query(vertices)
-            vmap = {old_idx: new_idx for old_idx, new_idx in enumerate(ii)}
-            for tria in t.triangles:
-                # Retrieve the original vertex indices for the current triangle
-                original_indices = tria.vertices
-                # Map these indices to the new indices
-                remapped_indices = [vmap[old_idx] for old_idx in original_indices]
-                # Append the remapped triangle to new_elements
-                new_trias.append((remapped_indices, 0))
-        output_msh_t.tria3 = np.hstack([output_msh_t.tria3, np.array(new_trias, dtype=jigsaw_msh_t.TRIA3_t)])
-        utils.reproject(output_msh_t, original_crs)
+        # utils.reproject(output_msh_t, original_crs)
+
 
     @staticmethod
     def _cleanup_isolates(vertices, elements) -> Tuple[np.array, np.array]:
@@ -4565,7 +4570,7 @@ class Quads:
         return coords, edges
 
     @staticmethod
-    def _get_new_trias(boundary):
+    def _get_new_trias_vert_ele(boundary):
         coords = boundary.coords
         edges = [(i, (i + 1) % len(coords)) for i in range(len(coords))]
         # coords, edges = self._clean_and_renumber(coords, edges)
@@ -4588,6 +4593,12 @@ class Quads:
         t.erase_outer_triangles_and_holes()
         vertices = np.array([(v.x, v.y) for v in t.vertices])
         elements = np.array([tria.vertices for tria in t.triangles])
+        return vertices, elements
+
+
+    @classmethod
+    def _get_new_trias(cls, boundary):
+        vertices, elements = cls._get_new_trias_vert_ele(boundary)
         return list(map(Polygon, vertices[elements, :].tolist()))
 
     @classmethod
@@ -4641,7 +4652,7 @@ class Quads:
             print(f"mps to triangulate took: {time()-start}", flush=True)
             if isinstance(mps_to_triangulate, Polygon):
                 mps_to_triangulate = MultiPolygon([mps_to_triangulate])
-            breakpoint()
+            # breakpoint()
             new_trias = []
             start = time()
             for i, poly in enumerate(mps_to_triangulate.geoms):
@@ -4649,6 +4660,7 @@ class Quads:
                 # print(boundary)
                 boundary = simplify(boundary, np.finfo(np.float32).eps)
                 if isinstance(boundary, LineString):
+
                     new_trias.extend(cls._get_new_trias(boundary))
                 elif isinstance(boundary, MultiLineString):
                     for this_bnd in boundary.geoms:

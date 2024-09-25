@@ -1444,6 +1444,7 @@ def grd_to_msh_t(_grd: Dict) -> jigsaw_msh_t:
 def msh_t_to_2dm(msh: jigsaw_msh_t):
     coords = msh.vert2["coord"]
     src_crs = msh.crs if hasattr(msh, "crs") else None
+    values = msh.value.flatten()
     if src_crs is not None:
         EPSG_4326 = CRS.from_epsg(4326)
         if not src_crs.equals(EPSG_4326):
@@ -1451,7 +1452,7 @@ def msh_t_to_2dm(msh: jigsaw_msh_t):
             coords = np.vstack(transformer.transform(coords[:, 0], coords[:, 1])).T
     return {
         "ND": {
-            i + 1: (coord, msh.value[i, 0] if not np.isnan(msh.value[i, 0]) else -99999)
+            i + 1: (coord, values[i] if not np.isnan(values[i]) else -99999)
             for i, coord in enumerate(coords)
         },
         "E3T": {i + 1: index + 1 for i, index in enumerate(msh.tria3["index"])},
