@@ -11,15 +11,6 @@ from pathlib import Path
 from typing import List, Union
 from typing import Tuple
 
-import centerline.exceptions
-import geopandas as gpd
-import matplotlib.pyplot as plt
-import networkx as nx
-import numpy as np
-import pandas as pd
-import PythonCDT as cdt
-import scipy.spatial
-import shapely.errors
 from centerline import exceptions
 from centerline.geometry import Centerline
 from inpoly import inpoly2
@@ -29,12 +20,23 @@ from matplotlib.tri import Triangulation
 from mpi4py.futures import MPICommExecutor
 from numpy.linalg import norm
 from pyproj import CRS, Transformer
+from pyproj import Transformer
 from scipy.spatial import KDTree
-from shapely import simplify
 from shapely import equals_exact, ops, wkb
+from shapely import simplify
 from shapely.geometry import (GeometryCollection, LinearRing, LineString,
                               MultiLineString, MultiPoint, MultiPolygon, Point,
                               Polygon, box, polygon)
+from shapely.ops import transform
+import PythonCDT as cdt
+import centerline.exceptions
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+import pandas as pd
+import scipy.spatial
+import shapely.errors
 
 from geomesh import utils
 
@@ -1972,6 +1974,8 @@ def get_linear_rings_from_trias_and_edges(mesh_subset, trias_to_drop, intersecti
         the_rings.extend(boundary.geoms)
 
     return the_rings
+
+
 
 # def get_linear_rings_from_trias_and_edges(mesh_subset, trias_to_drop, intersecting_edges) -> typing.List[LinearRing]:
 
@@ -3931,80 +3935,34 @@ class Quads:
                     # predicate='intersects',
                     )
             quads_poly_gdf.drop(index=joined[joined.index_right.isna()].index, inplace=True)
-            # with Pool(cpu_count()) as pool:
-            #     quads_poly_gdf["min_side_length"] = pd.concat(
-            #             pool.map(
-            #                 self._get_chunk_min_side_length,
-            #                 np.array_split(quads_poly_gdf.to_crs("epsg:6933").geometry, cpu_count())
-            #                 )
-            #             ).values
-            # with Pool(cpu_count()) as pool:
-            #     quads_poly_gdf["min_side_length"] =
-            #     pd.concat(np.quads_poly_gdf.to_crs("epsg:6933").geometry.map(lambda x: np.min(get_side_lengths(Polygon(x))))
-            # quads_poly_gdf.drop(index=quads_poly_gdf[quads_poly_gdf["min_side_length"] < 10.].index, inplace=True)
-            # quads_poly_gdf.drop(columns=["min_side_length"], inplace=True)
-            # vertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs(msh_t.crs))
-            from shapely.ops import transform
-            from pyproj import Transformer
             del bnd_mp, joined
             def get_msh_t_vertices(quad_vertices, crs):
-                # with Pool(cpu_count()) as pool:
-                #     result = pool.map(
-                #                 self._get_min_distance_chunk,
-                #                 np.array_split(msh_t.vert2["coord"], cpu_count()),
-                #                 )
-                # print("begin get_msh_t_vertices", flush=True)
-                # coords_gdf = gpd.GeoDataFrame(geometry=[Point(x) for x in msh_t.vert2["coord"]], crs=msh_t.crs).to_crs("epsg:6933")
-                # quads_poly_gdf_uu = transform(Transformer.from_crs(self.quads_poly_gdf.crs, "epsg:6933", always_xy=True).transform, self.quads_poly_gdf_uu)
-                # print("begin compouting distances", flush=True)
-                # with Pool(cpu_count()) as pool:
-                #     distances = pd.concat(
-                #             pool.starmap(
-                #                 self._get_distance_from_chunk,
-                #                 [(chunk, quads_poly_gdf_uu) for chunk in np.array_split(coords_gdf, cpu_count())]
-                #                 )
-                #             )
-                # distance_threshold = 10.
-
-                # # Filter the points based on the distance threshold
-                # filtered_points = coords_gdf.geometry[distances > distance_threshold]
-
-                # # Extract the coordinates of the points that meet the criteria
-                # return [(point.x, point.y) for point in filtered_points]
-
-
-                # qvertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs("epsg:6933"))
-                # distances, indices = KDTree(vertices[:, 0], vertices[:, 1]).query(utils.reprojectmsh_t.vert2["coord"])
-                # dixs = np.where(distances < 3.)
-
-
-                # IN lat/lon flot32 eps is 0.164 mm and float16.eps is ~1.34 meters
-                # Using large epsilon (~1 meter) avoids very narrow triangles.
-                # eps = 0.25*np.finfo(np.float16).eps if msh_t.crs.is_geographic else 0.25
-                # eps = 30.
-                # msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=list(map(lambda x: Point(x).buffer(eps), msh_t.vert2["coord"].tolist())), crs=msh_t.crs)
                 msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=[Point(x) for x in msh_t.vert2["coord"]], crs=msh_t.crs).to_crs("epsg:6933")
-                msh_t_vert2_buffered_gdf["geometry"] = msh_t_vert2_buffered_gdf.geometry.map(lambda x: x.buffer(5.))
+                # msh_t_vert2_buffered_gdf["geometry"] = msh_t_vert2_buffered_gdf.geometry.map(lambda x: x.buffer(5.))
                 joined = gpd.sjoin(
                         msh_t_vert2_buffered_gdf,
                         quads_poly_gdf.to_crs("epsg:6933"),
                         how='left',
-                        predicate='intersects',
-                        # predicate='within',
+                        # predicate='intersects',
+                        predicate='within',
                         )
+                # quads_poly_gdf.plot(ax=plt.gca(), facecolor="none", edgecolor="r")
+                # joined.plot(ax=plt.gca())
+                # joined.to_file("aa_joined.gpkg")
+                # quads_poly_gdf.to_file("aa_the_quads_to_join.gpkg")
+                # breakpoint()
+                # msh_t_vert2_buffered_gdf[msh_t_vert2_buffered_gdf.index.difference(joined.index)].to_file("aa_remaining.gpkg")
+                # raise
+
                 msh_t_vertices = msh_t.vert2["coord"][joined[joined.index_right.isna()].index.unique(), :]
                 transformer = Transformer.from_crs(msh_t.crs, "epsg:6933", always_xy=True)
                 msh_t_vertices = np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
-                distances, indices = KDTree(quad_vertices).query(msh_t_vertices)
-                # breakpoint()
-                msh_t_vertices = msh_t_vertices[np.where(distances > 10.)[0], :]
-                transformer = Transformer.from_crs("epsg:6933", msh_t.crs, always_xy=True)
-                return np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
-
-
-
-
-
+                return msh_t_vertices
+                # distances, indices = KDTree(quad_vertices).query(msh_t_vertices)
+                # # breakpoint()
+                # msh_t_vertices = msh_t_vertices[np.where(distances > 10.)[0], :]
+                # transformer = Transformer.from_crs("epsg:6933", msh_t.crs, always_xy=True)
+                # return np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
 
             vertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs("epsg:6933"))
             vertices = np.array(vertices)
@@ -4078,7 +4036,7 @@ class Quads:
                 # Here we implement a custom filter for cdt.Triangulation.
                 print("erase super triangle", flush=True)
                 # Begin by erasing the super triangle, since we definitely don't need that one.
-                t.erase_super_triangle()
+                # t.erase_super_triangle()
                 # t.erase_outer_triangles_and_holes()
                 # t.erase_outer_triangles(:set laststatus=2                # we assume operations over members of t are not safe, so we extract the remaining
                 # outputs into numpy arrays.
@@ -4087,22 +4045,23 @@ class Quads:
                 print("get constrained triangulation elements", flush=True)
                 elements = np.array([tria.vertices for tria in t.triangles])
                 # verify
-                # nprocs = cpu_count()
-                # chunksize = len(msh_t.vert2) // nprocs
-                # with Pool(nprocs) as pool:
-                #     original_mesh_gdf = gpd.GeoDataFrame(
-                #         geometry=list(pool.map(
-                #             Polygon,
-                #             vertices[elements, :].tolist(),
-                #             chunksize
-                #             )),
-                #         crs=msh_t.crs
-                #     )
+                nprocs = cpu_count()
+                chunksize = len(msh_t.vert2) // nprocs
+                with Pool(nprocs) as pool:
+                    original_mesh_gdf = gpd.GeoDataFrame(
+                        geometry=list(pool.map(
+                            Polygon,
+                            vertices[elements, :].tolist(),
+                            chunksize
+                            )),
+                        crs=msh_t.crs
+                    )
+                original_mesh_gdf.to_file("full_mesh_with_super_triangle.gpkg")
                 # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
                 # plt.title("this is contrained mesh")
                 # plt.show(block=False)
                 # breakpoint()
-                # raise
+                raise
                 return vertices, elements, crs
 
             def get_centroid_based_elements():
@@ -4434,13 +4393,12 @@ class Quads:
 
     @staticmethod
     def _compute_skewness(output_msh_t):
+
         vert2 = output_msh_t.vert2["coord"]
         transformer = Transformer.from_crs(output_msh_t.crs, "epsg:6933", always_xy=True)
         vert2 = np.array(transformer.transform(vert2[:, 0], vert2[:, 1])).T
         tria3 = output_msh_t.tria3["index"]
         elem_nodes = vert2[tria3]
-        edge_dx_dy = np.abs(elem_nodes - np.roll(elem_nodes, shift=-1, axis=1))
-        euclidean_distances = np.sqrt(np.sum(np.square(edge_dx_dy), axis=2))
 
         # Calculate vectors AB and AC for each triangle
         vec_AB = elem_nodes[:, 1, :] - elem_nodes[:, 0, :]
@@ -4448,9 +4406,19 @@ class Quads:
 
         # Calculate the area of each triangle using the cross product (in 2D)
         area = 0.5 * np.abs(vec_AB[:, 0] * vec_AC[:, 1] - vec_AB[:, 1] * vec_AC[:, 0])
-        equivalent_radius = np.abs(area) / np.pi
-        row_wise_max = np.max(euclidean_distances, axis=1)
-        skewness = row_wise_max / equivalent_radius
+
+        # Calculate the equivalent radius
+        equivalent_radius = np.sqrt(area / np.pi)
+
+        # Calculate edge lengths
+        edge_lengths = np.sqrt(np.sum(np.square(elem_nodes - np.roll(elem_nodes, shift=-1, axis=1)), axis=2))
+
+        # Find the maximum edge length for each triangle
+        max_edge_length = np.max(edge_lengths, axis=1)
+
+        # Calculate skewness
+        skewness = max_edge_length / equivalent_radius
+
         return skewness
 
     @classmethod
@@ -5648,34 +5616,21 @@ def generate_quad_gdf_from_mp(
     # cx.add_basemap(ax=plt.gca(), crs=local_crs)
     # plt.show(block=True)
     # raise
-
-
-    # if upper_threshold_size is not None:
-    #     final_patches = ops.unary_union(final_patches)
-    #     buffered_geom = final_patches.buffer(-upper_threshold_size).buffer(upper_threshold_size)
-    #     if not buffered_geom.is_empty:
-    #         final_patches = final_patches.difference(
-    #             gpd.GeoDataFrame([{'geometry': buffered_geom}], crs=local_crs).unary_union
-    #                 )
-    #     if isinstance(final_patches, MultiPolygon):
-    #         final_patches = [polygon for polygon in final_patches.geoms]
-    #     elif isinstance(final_patches, Polygon):
-    #         final_patches = [final_patches]
-
-    # if lower_threshold_size is not None:
-    #     final_patches = ops.unary_union(final_patches)
-    #     buffered_geom = final_patches.buffer(-lower_threshold_size).buffer(lower_threshold_size)
-    #     if not buffered_geom.is_empty:
-    #         final_patches = final_patches.difference(
-    #             gpd.GeoDataFrame([{'geometry': buffered_geom}], crs=local_crs).unary_union
-    #                 )
-    #     if isinstance(final_patches, MultiPolygon):
-    #         final_patches = [polygon for polygon in final_patches.geoms]
-    #     elif isinstance(final_patches, Polygon):
-    #         final_patches = [final_patches]
-
     if threshold_size is not None:
         final_patches = ops.unary_union(final_patches)
+        # gpd.GeoDataFrame(
+        #         geometry = [final_patches],
+        #         crs=local_crs
+        #         ).to_file("original.gpkg")
+
+        # gpd.GeoDataFrame(
+        #         geometry = [final_patches.buffer(-threshold_size)],
+        #         crs=local_crs
+        #         ).to_file("eroded.gpkg")
+        # gpd.GeoDataFrame(
+        #         geometry = [final_patches.buffer(-threshold_size).buffer(threshold_size)],
+        #         crs=local_crs
+        #         ).to_file("dilation-post-erosion.gpkg")
         buffered_geom = final_patches.buffer(-threshold_size).buffer(threshold_size)
         if not buffered_geom.is_empty:
             final_patches = final_patches.difference(
@@ -5690,6 +5645,10 @@ def generate_quad_gdf_from_mp(
             final_patches = [patch for patch in final_patches.geoms if isinstance(patch, Polygon) and not patch.is_empty]
         else:
             raise NotImplementedError(f"Unreachable: Unexpected {type(final_patches)=}")
+        # gpd.GeoDataFrame(
+        #         geometry = [ops.unary_union(final_patches)],
+        #         crs=local_crs
+        #         ).to_file("narrow-channels.gpkg")
     # print(final_patches)
     job_args = []
     for patch_id, this_patch in enumerate(final_patches):
@@ -5712,9 +5671,9 @@ def generate_quad_gdf_from_mp(
     #     centerlines = [line for line, result in zip(centerlines, is_within) if result is True]
     # verify
     # gpd.GeoDataFrame(geometry=final_patches, crs=local_crs).plot(ax=plt.gca(), facecolor='none')
-    # gpd.GeoDataFrame(geometry=centerlines, crs=local_crs).plot(cmap='tab20', ax=plt.gca())
+    # gpd.GeoDataFrame(geometry=centerlines, crs=local_crs).to_file("centerlines.gpkg")
+    # .plot(cmap='tab20', ax=plt.gca())
     # plt.show(block=True)
-    # raise
     centerlines = filter_linestrings(
             centerlines,
             min_branch_length=min_branch_length or 3.*max_quad_length,
@@ -6188,24 +6147,46 @@ def test_quadgen_for_Harlem_River():
             # "northeast_sandy/ncei19_n39x75_w075x75_2014v1.tif"
             'northeast_sandy/ncei19_n41x00_w074x00_2015v1.tif',
             )
+
+    mp = Geom(
+            raster,
+            zmax=10.
+            ).get_multipolygon()
+    import geopandas as gpd
+    gpd.GeoDataFrame(geometry=[mp], crs=raster.crs).to_file("geom_zmax10.gpkg")
+    mp = Geom(
+            raster,
+            zmax=0.
+            ).get_multipolygon()
+    gpd.GeoDataFrame(geometry=[mp], crs=raster.crs).to_file("geom_zmax0.gpkg")
+    mp = Geom(
+            raster,
+            zmin=0.,
+            zmax=10.,
+            ).get_multipolygon()
+    gpd.GeoDataFrame(geometry=[mp], crs=raster.crs).to_file("geom_zmin0_zmax10.gpkg")
+
+    raise
+
+
     raster.resampling_factor = 0.2
     Path("the_quads.pkl").unlink(missing_ok=True)
     if Path("the_quads.pkl").is_file():
         quads = pickle.load(open("the_quads.pkl", "rb"))
     else:
+        # quads = Quads.from_raster(
+        #                         raster,
+        #                         # min_quad_length=10.,
+        #                         max_quad_length=500.,
+        #                         resample_distance=100.,
+        #                         max_quad_width=500.,
+        #                         threshold_size=50.,
+        #                         # threshold_size=500.,
+        #                         # min_quad_width=10.,
+        #                         )
         quads = Quads.from_raster(
                                 raster,
-                                # min_quad_length=10.,
-                                max_quad_length=500.,
-                                resample_distance=100.,
-                                max_quad_width=500.,
-                                threshold_size=1500.,
-                                # threshold_size=500.,
-                                # min_quad_width=10.,
-                                )
-        quads = Quads.from_raster(
-                                raster,
-                                threshold_size=1500.,
+                                threshold_size=450.,
                                 # min_quad_length=10.,
                                 max_quad_length=500.,
                                 resample_distance=100.,
@@ -6213,11 +6194,12 @@ def test_quadgen_for_Harlem_River():
                                 zmax=0.,
                                 max_quad_width=500.,
                                 # min_quad_width=10.,
-                                previous=quads,
+                                # previous=quads,
                                 )
+        # raise
         quads = Quads.from_raster(
                                 raster,
-                                threshold_size=1500.,
+                                threshold_size=1500,
                                 # min_quad_length=10.,
                                 max_quad_length=500.,
                                 resample_distance=100.,
@@ -6227,7 +6209,9 @@ def test_quadgen_for_Harlem_River():
                                 # min_quad_width=10.,
                                 previous=quads,
                                 )
-        pickle.dump(quads, open("the_quads.pkl", "wb"))
+        # logger.info)
+        # breakpoint()
+        # pickle.dump(quads, open("the_quads.pkl", "wb"))
     # verification
     # quads.plot(ax=plt.gca(), facecolor='none')
     # plt.show(block=True)
@@ -6237,6 +6221,7 @@ def test_quadgen_for_Harlem_River():
     if Path("the_old_msh_t.pkl").is_file():
         old_msh_t = pickle.load(open("the_old_msh_t.pkl", "rb"))
     else:
+        print("begin generatin mesh")
         geom = Geom(
                 raster,
                 zmax=10.,
@@ -6272,11 +6257,12 @@ def test_quadgen_for_Harlem_River():
         old_msh_t = driver.msh_t()
         pickle.dump(old_msh_t, open("the_old_msh_t.pkl", "wb"))
     # raise NotImplementedError("ready")
-    quads.quads_gdf["area"] = quads.quads_gdf.to_crs("epsg:6933").geometry.area
-    quads.quads_gdf = quads.quads_gdf[quads.quads_gdf["area"] < 1]
-    quads.quads_gdf.drop(columns=["area"], inplace=True)
+    # quads.quads_gdf["area"] = quads.quads_gdf.to_crs("epsg:6933").geometry.area
+    # quads.quads_gdf = quads.quads_gdf[quads.quads_gdf["area"] < 1]
+    # quads.quads_gdf.drop(columns=["area"], inplace=True)
     # new_msh_t = old_msh_t
     new_msh_t = quads(old_msh_t)
+    raise
     # quads_poly_gdf_uu = quads.quads_poly_gdf_uu
     # quads_poly_uu_gdf = gpd.GeoDataFrame(
     #         geometry=[geom for geom in quads_poly_gdf_uu.geoms],
@@ -7023,3 +7009,5 @@ def test_thalweg_detection():
     # ax[1].imshow(thalwegs_connected, cmap='gray')
     # ax[1].set_title('Thalwegs')
     # plt.show()
+if __name__ == "__main__":
+    test_quadgen_for_Harlem_River()
