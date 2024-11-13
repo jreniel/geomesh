@@ -36,6 +36,7 @@ fasteners = "^0.19"
 pydantic = "^2.5.2"
 pythoncdt = {git = "https://github.com/artem-ogre/PythonCDT.git", rev = "f8239dd33e0a183cf84d6da152a823c56631831f"}
 mpi4py = "^4.0.1"
+dask = {extras = ["dataframe"], version = "^2024.11.2"}
 
 [tool.poetry-dynamic-versioning]
 enable = true

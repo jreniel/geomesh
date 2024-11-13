@@ -392,9 +392,12 @@ files = [
 [package.dependencies]
 click = ">=8.1"
 cloudpickle = ">=3.0.0"
+dask-expr = {version = ">=1.1,<1.2", optional = true, markers = "extra == \"dataframe\""}
 fsspec = ">=2021.09.0"
 importlib-metadata = {version = ">=4.13.0", markers = "python_version < \"3.12\""}
+numpy = {version = ">=1.24", optional = true, markers = "extra == \"array\""}
 packaging = ">=20.0"
+pandas = {version = ">=2.0", optional = true, markers = "extra == \"dataframe\""}
 partd = ">=1.4.0"
 pyyaml = ">=5.3.1"
 toolz = ">=0.10.0"
@@ -406,6 +409,25 @@ dataframe = ["dask-expr (>=1.1,<1.2)", "dask[array]", "pandas (>=2.0)"]
 diagnostics = ["bokeh (>=3.1.0)", "jinja2 (>=2.10.3)"]
 distributed = ["distributed (==2024.11.2)"]
 test = ["pandas[test]", "pre-commit", "pytest", "pytest-cov", "pytest-rerunfailures", "pytest-timeout", "pytest-xdist"]
+
+[[package]]
+name = "dask-expr"
+version = "1.1.19"
+description = "High Level Expressions for Dask"
+optional = false
+python-versions = ">=3.10"
+files = [
+    {file = "dask_expr-1.1.19-py3-none-any.whl", hash = "sha256:b2931c20241a3bc1978ccccc4b8a2f7b27b15bb85ce89fec04595bc5bcf20cf5"},
+    {file = "dask_expr-1.1.19.tar.gz", hash = "sha256:5c8a50924bf6718bb630d58f11311e3d928c7037af913e096fa0eb3f0a493b9f"},
+]
+
+[package.dependencies]
+dask = "2024.11.2"
+pandas = ">=2"
+pyarrow = ">=14.0.1"
+
+[package.extras]
+analyze = ["crick", "distributed", "graphviz"]
 
 [[package]]
 name = "dask-geopandas"
@@ -2078,4 +2100,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.12"
-content-hash = "f1f4a64abf8d3dd98a172ab5f7070d13060b601a23415fc83c3989abe5a90884"
+content-hash = "a16dc0e0469da6c3b5a42cf0757b6f83918a4a9259f249b1faccb1611abf4f2b"
