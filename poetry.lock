@@ -1643,6 +1643,24 @@ files = [
 six = ">=1.5"
 
 [[package]]
+name = "PythonCDT"
+version = "0.0.1"
+description = "Test"
+optional = false
+python-versions = ">=3.6"
+files = []
+develop = false
+
+[package.extras]
+test = ["pytest (>=6.0)"]
+
+[package.source]
+type = "git"
+url = "https://github.com/artem-ogre/PythonCDT.git"
+reference = "f8239dd33e0a183cf84d6da152a823c56631831f"
+resolved_reference = "f8239dd33e0a183cf84d6da152a823c56631831f"
+
+[[package]]
 name = "pytz"
 version = "2024.2"
 description = "World timezone definitions, modern and historical"
@@ -2038,4 +2056,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.12"
-content-hash = "f973a2a2e141ab7c76f6c23c24210a727607715f7e1fe7b65ed4cdf8ef1ec684"
+content-hash = "25242ba4d2ff0353bb89863a9c9543d2ae5da653ff90d04d17bc99a5de29c6d0"
