@@ -997,6 +997,28 @@ python-dateutil = ">=2.7"
 dev = ["meson-python (>=0.13.1)", "numpy (>=1.25)", "pybind11 (>=2.6)", "setuptools (>=64)", "setuptools_scm (>=7)"]
 
 [[package]]
+name = "mpi4py"
+version = "4.0.1"
+description = "Python bindings for MPI"
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "mpi4py-4.0.1-cp310-cp310-win_amd64.whl", hash = "sha256:600f26cae7f390b4ec525f5c1ccc374686c37a8c07f9c21320866c0a323f6dae"},
+    {file = "mpi4py-4.0.1-cp311-cp311-win_amd64.whl", hash = "sha256:0cb209fcdc7fee0346d12edff1cfd1c1ffca1b807c53631ba0436b9c2bcf8229"},
+    {file = "mpi4py-4.0.1-cp312-cp312-win_amd64.whl", hash = "sha256:b704e7db92b1ac94b96802e17cf28082455daa928e8e51398ad9f5e5eb8c9b7b"},
+    {file = "mpi4py-4.0.1-cp313-cp313-win_amd64.whl", hash = "sha256:52a7b1760b1aeb41a0ea38969314b2b170117a0ded2f689915f1cb89aaaf8a6f"},
+    {file = "mpi4py-4.0.1-cp36-cp36m-win_amd64.whl", hash = "sha256:6fa09d03ec7aa1264fcf650670c52e06ae87110f0bc6f84bf29f0183f6d3d19a"},
+    {file = "mpi4py-4.0.1-cp37-cp37m-win_amd64.whl", hash = "sha256:05999b6e8536a1234456d739ea1e695105613a866cae9a86010f87875229ffc0"},
+    {file = "mpi4py-4.0.1-cp38-cp38-win_amd64.whl", hash = "sha256:f7e863ea266af98d25c3efb9b7d9f56265000001b57cf2fb98a986f4ec7daa3c"},
+    {file = "mpi4py-4.0.1-cp39-cp39-win_amd64.whl", hash = "sha256:bf15be241ed81bad0a0635cb47e0f20faa6ec4228f0fa955bf0128f43462b639"},
+    {file = "mpi4py-4.0.1-pp310-pypy310_pp73-win_amd64.whl", hash = "sha256:93f45dcc2fd5f3396f961b1bc8f0fb9d5db786fdc0d72e4f8611f47718b5dac8"},
+    {file = "mpi4py-4.0.1-pp37-pypy37_pp73-win_amd64.whl", hash = "sha256:2b8bfbb730c47214a6233512eb905b2b12a40a036d92e96e2c7dd9a3405d8b4a"},
+    {file = "mpi4py-4.0.1-pp38-pypy38_pp73-win_amd64.whl", hash = "sha256:72006d9d9cc0e17d2a354648839e0d9743c7b91223586c323090033114324ee4"},
+    {file = "mpi4py-4.0.1-pp39-pypy39_pp73-win_amd64.whl", hash = "sha256:cd29eff4366f5182f3cbdac42ba62d0c5b17c6fc925dfe55cbe469fbe2d56cfb"},
+    {file = "mpi4py-4.0.1.tar.gz", hash = "sha256:f3174b245775d556f4fddb32519a2066ef0592edc810c5b5a59238f9a0a40c89"},
+]
+
+[[package]]
 name = "msgpack"
 version = "1.1.0"
 description = "MessagePack serializer"
@@ -2056,4 +2078,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.12"
-content-hash = "25242ba4d2ff0353bb89863a9c9543d2ae5da653ff90d04d17bc99a5de29c6d0"
+content-hash = "f1f4a64abf8d3dd98a172ab5f7070d13060b601a23415fc83c3989abe5a90884"
