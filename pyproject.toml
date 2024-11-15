@@ -21,7 +21,7 @@ shapely = "^2.0.1"
 pyproj = "^3.6.0"
 inpoly = {git = "https://github.com/jreniel/inpoly-python.git", rev = "pyproject"}
 jigsawpy = {git = "https://github.com/jreniel/jigsaw-python.git", rev = "add_pyproject"}
-geopandas = "^0.13.2"
+geopandas = "^1.0.1"
 requests = "^2.31.0"
 rasterio = "^1.3.8"
 appdirs = "^1.4.4"
@@ -43,9 +43,10 @@ enable = true
 
 [tool.poetry.scripts]
 geomesh = "geomesh.__main__:main"
-geom_build = "geomesh.cli.mpi.geom_build:entrypoint"
-hfun_build = "geomesh.cli.mpi.hfun_build:entrypoint"
-mesh_build = "geomesh.cli.mpi.mesh_build:entrypoint"
+geom_build = "geomesh.cli.mpi.geom_build:main"
+hfun_build = "geomesh.cli.mpi.hfun_build:main"
+mesh_build = "geomesh.cli.mpi.mesh_build:main"
+hgrid_build = "geomesh.cli.mpi.hgrid_build:main"
 
 # Nose tests configuration (you might need to adapt this section depending on how you're running your tests)
 [tool.nosetests]
