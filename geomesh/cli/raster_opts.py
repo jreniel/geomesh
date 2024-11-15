@@ -212,7 +212,7 @@ def append_raster_cmd_opts(cmd, opts):
 
 # if 'fill_nodata' in opts:
     #     raster_opts.update({'fill_nodata': opts['fill_nodata']})
-        
+
     # TODO: There are additional more raster_opts to consider !!!!!!!!!!
     # fill_nodata
     # resample
@@ -284,20 +284,18 @@ def expand_tile_index(self, request: Dict) -> Generator:
     # User wants specific directory
     else:
         cache_dir = Path(cache_opt)
-
     for row in gdf.itertuples():
-        parsed_url = urlparse(row.URL)
+        url = row.URL if hasattr(row, 'URL') else row.url
+        parsed_url = urlparse(url)
         fname = cache_dir / parsed_url.netloc / parsed_url.path[1:]
         fname.parent.mkdir(exist_ok=True, parents=True)
         if not fname.is_file():
-            logger.debug(f"Downloading {row.URL} to {fname}\n")
+            logger.debug(f"Downloading {url} to {fname}\n")
             wget.download(
-                row.URL,
+                url,
                 out=str(fname.parent),
             )
         yield fname, request
-        # logger.info(f'Yield raster {fname}')
-
 
 def expand_raster_request_path(request: Dict) -> Generator:
     request = request.copy()
