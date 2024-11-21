@@ -3920,476 +3920,490 @@ class Quads:
     def _get_distance_from_chunk(chunk, quads_poly_gdf_uu):
         return chunk.geometry.map(lambda x: x.distance(quads_poly_gdf_uu))
 
+    def get_msh_t_vertices(self, base_msh_t):
+        joined = gpd.sjoin(
+                gpd.GeoDataFrame(geometry=[Point(x) for x in base_msh_t.vert2["coord"]], crs=base_msh_t.crs).to_crs("epsg:6933"),
+                self.quads_poly_gdf.to_crs("epsg:6933"),
+                how='left',
+                predicate='within',
+                )
+        msh_t_vertices = base_msh_t.vert2["coord"][joined[joined.index_right.isna()].index.unique(), :]
+        # quads_poly_gdf.plot(ax=plt.gca(), facecolor="none", edgecolor="r")
+        # gpd.GeoDataFrame(geometry=list(map(LineString, msh_t_vertices))).plot(ax=plt.gca())
+        # plt.title("joined")
+        # plt.show()
+        # # joined.to_file("aa_joined.gpkg")
+        # # quads_poly_gdf.to_file("aa_the_quads_to_join.gpkg")
+        # breakpoint()
+        # # msh_t_vert2_buffered_gdf[msh_t_vert2_buffered_gdf.index.difference(joined.index)].to_file("aa_remaining.gpkg")
+        # raise
 
-    def _get_new_msh_t_from_cdt(self, msh_t):
+        # msh_t_vertices = base_msh_t.vert2["coord"][joined[joined.index_right.isna()].index.unique(), :]
+        # transformer = Transformer.from_crs(base_msh_t.crs, "epsg:6933", always_xy=True)
+        # msh_t_vertices = np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
+        # distances, indices = KDTree(quad_vertices).query(msh_t_vertices)
+        # # breakpoint()
+        # msh_t_vertices = msh_t_vertices[np.where(distances > 10.)[0], :]
+        # transformer = Transformer.from_crs("epsg:6933", msh_t.crs, always_xy=True)
+        # msh_t_vertices = np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
+        return msh_t_vertices
 
-        def get_constrained_triangulation():
-            print("begin get_constrained_triangulation()", flush=True)
-            quads_poly_gdf = self.quads_poly_gdf.copy()
-            bnd_mp = utils.get_geom_msh_t_from_msh_t_as_mp(msh_t)
-            joined = gpd.sjoin(
-                    quads_poly_gdf.to_crs(msh_t.crs),
-                    gpd.GeoDataFrame(geometry=list(bnd_mp.geoms), crs=msh_t.crs),
-                    how='left',
-                    predicate='within',
-                    # predicate='intersects',
+    def get_constrained_triangulation(self, base_msh_t):
+        print("begin get_constrained_triangulation()", flush=True)
+        quads_poly_gdf = self.quads_poly_gdf.copy()
+        bnd_mp = utils.get_geom_msh_t_from_msh_t_as_mp(base_msh_t)
+        joined = gpd.sjoin(
+                quads_poly_gdf.to_crs(base_msh_t.crs),
+                gpd.GeoDataFrame(geometry=list(bnd_mp.geoms), crs=base_msh_t.crs),
+                how='left',
+                # predicate='within',
+                predicate='intersects',
+                )
+        quads_poly_gdf.drop(index=joined[joined.index_right.isna()].index, inplace=True)
+        del bnd_mp, joined
+
+        vertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs("epsg:6933"))
+        vertices = np.array(vertices)
+        # elements = np.array(elements)
+        # threshold = 1.0
+        # distances, indices = KDTree(vertices).query(vertices, k=2)
+        # distances = distances[:, 1]
+        # indices = indices[:, 1]
+        # while distances.min() < threshold:
+        #     print("doing iter")
+        #     _idxs = np.where(distances <= threshold)[0]
+        #     node_indices = np.arange(vertices.shape[0])[_idxs]
+        #     close_pairs = indices[_idxs]
+        #     mask = node_indices < close_pairs
+        #     node_indices = node_indices[mask]
+        #     close_pairs = close_pairs[mask]
+        #     mapping = np.arange(vertices.shape[0])
+        #     mapping[close_pairs] = node_indices
+        #     elements = mapping[elements]
+        #     is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 4, arr=elements, axis=1)
+        #     elements = elements[~is_collapsed]
+        #     vertices, elements = self._cleanup_isolates(vertices, elements)
+        #     distances, indices = KDTree(vertices).query(vertices, k=2)
+        #     distances = distances[:, 1]
+        #     indices = indices[:, 1]
+        print("begin get_msh_t_vertices", flush=True)
+
+
+        filtered_base_mesh_vertices = self.get_msh_t_vertices(base_msh_t)
+
+        transformer = Transformer.from_crs("EPSG:6933", base_msh_t.crs, always_xy=True)
+        quad_vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
+
+
+
+        vertices = np.vstack([
+            quad_vertices,
+            filtered_base_mesh_vertices,
+            ])
+        del quads_poly_gdf
+        # new_vertices = np.array(transformer.transform(new_vertices[:, 0], new_vertices[:, 1])).T
+        # tree = KDTree(new_vertices)
+        # distances, indices = tree.query(vertices, k=1)  # k=1 for nearest neighbor
+        # # breakpoint()
+        # # res = tree1.query(
+        # vertices =
+
+
+        # vertices.extend(get_msh_t_vertices())
+        t = cdt.Triangulation(
+                cdt.VertexInsertionOrder.AS_PROVIDED,
+                cdt.IntersectingConstraintEdges.RESOLVE,
+                0.
+                )
+        print("begin insert vertices", flush=True)
+        # print(vertices, flush=True)
+        t.insert_vertices([cdt.V2d(*coord) for coord in vertices])
+        print("begin insert edges", flush=True)
+        t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in elements_to_edges(elements)])
+        return t, base_msh_t.crs
+
+
+
+    # def get_final_mesh_gdf():
+    #     print("begin generating conforming tri_mesh_gdf", flush=True)
+    #     tri_mesh_gdf = get_conforming_tri_mesh_gdf()
+    #     return tri_mesh_gdf
+        print("begin replacing trias with quads", flush=True)
+        joined = gpd.sjoin(
+                gpd.GeoDataFrame(geometry=tri_mesh_gdf.to_crs("epsg:6933").geometry.centroid, crs="epsg:6933"),
+                self.quads_poly_gdf.to_crs("epsg:6933"),
+                how='left',
+                predicate='within',
+                )
+        joined = joined.to_crs(tri_mesh_gdf.crs)
+        joined.geometry = tri_mesh_gdf.geometry
+        grouped = joined.groupby('index_right')
+        filtered_groups = {idx: group for idx, group in grouped if len(group) == 2}
+        with Pool(cpu_count()) as pool:
+            grouped = gpd.GeoDataFrame(
+                    geometry=list(pool.map(
+                        ops.unary_union,
+                        [group.geometry for group in filtered_groups.values()],
+                        len(filtered_groups) // cpu_count(),
+                        )),
+                    crs=tri_mesh_gdf.crs
                     )
-            quads_poly_gdf.drop(index=joined[joined.index_right.isna()].index, inplace=True)
-            del bnd_mp, joined
-            def get_msh_t_vertices(quad_vertices, crs):
-                msh_t_vert2_buffered_gdf = gpd.GeoDataFrame(geometry=[Point(x) for x in msh_t.vert2["coord"]], crs=msh_t.crs).to_crs("epsg:6933")
-                # msh_t_vert2_buffered_gdf["geometry"] = msh_t_vert2_buffered_gdf.geometry.map(lambda x: x.buffer(5.))
-                joined = gpd.sjoin(
-                        msh_t_vert2_buffered_gdf,
-                        quads_poly_gdf.to_crs("epsg:6933"),
-                        how='left',
-                        # predicate='intersects',
-                        predicate='within',
-                        )
-                # quads_poly_gdf.plot(ax=plt.gca(), facecolor="none", edgecolor="r")
-                # joined.plot(ax=plt.gca())
-                # joined.to_file("aa_joined.gpkg")
-                # quads_poly_gdf.to_file("aa_the_quads_to_join.gpkg")
-                # breakpoint()
-                # msh_t_vert2_buffered_gdf[msh_t_vert2_buffered_gdf.index.difference(joined.index)].to_file("aa_remaining.gpkg")
-                # raise
+        # grouped.geometry = grouped.geometry.map(lambda x: polygon.orient(x, sign=1.))
+        # Collect indices of geometries in tri_mesh_gdf to be dropped
+        indices_to_drop = [idx for group in filtered_groups.values() for idx in group.index]
 
-                msh_t_vertices = msh_t.vert2["coord"][joined[joined.index_right.isna()].index.unique(), :]
-                transformer = Transformer.from_crs(msh_t.crs, "epsg:6933", always_xy=True)
-                msh_t_vertices = np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
-                return msh_t_vertices
-                # distances, indices = KDTree(quad_vertices).query(msh_t_vertices)
-                # # breakpoint()
-                # msh_t_vertices = msh_t_vertices[np.where(distances > 10.)[0], :]
-                # transformer = Transformer.from_crs("epsg:6933", msh_t.crs, always_xy=True)
-                # return np.array(transformer.transform(msh_t_vertices[:, 0], msh_t_vertices[:, 1])).T
+        # Drop these indices from tri_mesh_gdf
+        tri_mesh_gdf.drop(index=list(set(indices_to_drop)), inplace=True)
+        # tri_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+        # grouped.plot(ax=plt.gca(), facecolor='r', edgecolor='r', alpha=0.3, linewidth=0.3)
+        # plt.show(block=False)
+        # breakpoint()
+        # raise
+        final_mesh_gdf = pd.concat([tri_mesh_gdf, grouped], ignore_index=True)
+        final_mesh_gdf.geometry = final_mesh_gdf.geometry.map(lambda x: polygon.orient(x, sign=1.))
+        return final_mesh_gdf
+        breakpoint()
+        # final_mesh_gdf = pd.c
+        # breakpoint()
 
-            vertices, elements = poly_gdf_to_elements(quads_poly_gdf.to_crs("epsg:6933"))
-            vertices = np.array(vertices)
-            elements = np.array(elements)
-            threshold = 1.0
-            distances, indices = KDTree(vertices).query(vertices, k=2)
-            distances = distances[:, 1]
-            indices = indices[:, 1]
-            while distances.min() < threshold:
-                print("doing iter")
-                _idxs = np.where(distances <= threshold)[0]
-                node_indices = np.arange(vertices.shape[0])[_idxs]
-                close_pairs = indices[_idxs]
-                mask = node_indices < close_pairs
-                node_indices = node_indices[mask]
-                close_pairs = close_pairs[mask]
-                mapping = np.arange(vertices.shape[0])
-                mapping[close_pairs] = node_indices
-                elements = mapping[elements]
-                is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 4, arr=elements, axis=1)
-                elements = elements[~is_collapsed]
-                vertices, elements = self._cleanup_isolates(vertices, elements)
-                distances, indices = KDTree(vertices).query(vertices, k=2)
-                distances = distances[:, 1]
-                indices = indices[:, 1]
-            print("begin get_msh_t_vertices", flush=True)
+        # print("gener:ate final_mesh_gdf (the hybrid one)", flush=True)
+        # final_mesh_gdf = pd.concat([tri_mesh_gdf, self.quads_poly_gdf.loc[joined[~joined.index_right.isna()].index_right.unique()].to_crs(tri_mesh_gdf.crs)], ignore_index=True)
+        # final_mesh_gdf = final_mesh_gdf[final_mesh_gdf.to_crs("epsg:6933").geometry.area >= 1.]
+        # breakpoint()
+        # def is_conforming(row):
+        #     ls_right = LinearRing(final_mesh_gdf.loc[row.index_right].geometry.exterior.coords)
+        #     return elements_are_conforming(row.geometry, ls_right)
+
+        # joined = gpd.sjoin(
+        #         final_mesh_gdf,
+        #         final_mesh_gdf,
+        #         how='inner',
+        #         predicate='intersects'
+        #         )
+        # joined = joined[joined.index != joined.index]
+        # joined = joined[joined.apply(is_conforming, axis=1)]
+        # verification
+        # final_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+        # plt.show(block=False)
+        # breakpoint()
+        return final_mesh_gdf
 
 
-            filtered_base_mesh_vertices = get_msh_t_vertices(vertices, "epsg:6933")
+    def snap_nodes(self, coords, triangles, crs, distance_threshold=1.):
+        transformer = Transformer.from_crs(crs, "epsg:6933", always_xy=True)
+        coords = np.array(transformer.transform(coords[:, 0], coords[:, 1])).T
+        # Build KD-tree for efficient nearest neighbor search
+        tree = KDTree(coords)
 
-            transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
-            quad_vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
+        # Find all pairs of points within distance threshold
+        pairs = tree.query_pairs(distance_threshold)
 
+        if len(pairs) == 0:
+            return coords, triangles
 
+        # Create groups of nodes to be merged
+        groups = defaultdict(set)
 
-            vertices = np.vstack([
-                quad_vertices,
-                filtered_base_mesh_vertices,
-                ])
-            del quads_poly_gdf
-            # new_vertices = np.array(transformer.transform(new_vertices[:, 0], new_vertices[:, 1])).T
-            # tree = KDTree(new_vertices)
-            # distances, indices = tree.query(vertices, k=1)  # k=1 for nearest neighbor
-            # # breakpoint()
-            # # res = tree1.query(
-            # vertices =
+        # Initialize each node as its own group
+        for i in range(len(coords)):
+            groups[i].add(i)
 
+        # Merge groups of nearby nodes
+        for i, j in pairs:
+            # Find the groups containing i and j
+            group_i = None
+            group_j = None
+            for group in groups.values():
+                if i in group:
+                    group_i = group
+                if j in group:
+                    group_j = group
+                if group_i and group_j:
+                    break
 
-            # vertices.extend(get_msh_t_vertices())
-            t = cdt.Triangulation(
-                    cdt.VertexInsertionOrder.AS_PROVIDED,
-                    cdt.IntersectingConstraintEdges.RESOLVE,
-                    0.
-                    )
-            print("begin insert vertices", flush=True)
-            # print(vertices, flush=True)
-            t.insert_vertices([cdt.V2d(*coord) for coord in vertices])
-            print("begin insert edges", flush=True)
-            t.insert_edges([cdt.Edge(e0, e1) for e0, e1 in elements_to_edges(elements)])
-            return t, msh_t.crs
+            # Merge the groups if they're different
+            if group_i is not group_j:
+                group_i.update(group_j)
+                # Remove the old group
+                for k in group_j:
+                    groups[k] = group_i
 
+        # Create unique groups
+        unique_groups = list(set(map(frozenset, groups.values())))
 
-        def get_conforming_tri_mesh_gdf():
+        # Calculate centroids for each group
+        new_coords_list = []
+        old_to_new_index = {}
 
-            def get_vertices_and_unfiltered_elements():
-                t, crs = get_constrained_triangulation()
+        for i, group in enumerate(unique_groups):
+            group_coords = coords[list(group)]
+            centroid = np.mean(group_coords, axis=0)
+            new_coords_list.append(centroid)
 
-                # the constrained triangulation has all the triangles we need, plus many others that we
-                # need to filter out. Normally, one would use erase_outer_triangles_and_holes() but in
-                # our tests, we see that it leads to significant over-filtering.
-                # Here we implement a custom filter for cdt.Triangulation.
-                print("erase super triangle", flush=True)
-                # Begin by erasing the super triangle, since we definitely don't need that one.
-                # t.erase_super_triangle()
-                # t.erase_outer_triangles_and_holes()
-                # t.erase_outer_triangles(:set laststatus=2                # we assume operations over members of t are not safe, so we extract the remaining
-                # outputs into numpy arrays.
-                print("get constrained triangulation vertices", flush=True)
-                vertices = np.array([(v.x, v.y) for v in t.vertices])
-                print("get constrained triangulation elements", flush=True)
-                elements = np.array([tria.vertices for tria in t.triangles])
-                # verify
-                nprocs = cpu_count()
-                chunksize = len(msh_t.vert2) // nprocs
-                with Pool(nprocs) as pool:
-                    original_mesh_gdf = gpd.GeoDataFrame(
-                        geometry=list(pool.map(
-                            Polygon,
-                            vertices[elements, :].tolist(),
-                            chunksize
-                            )),
-                        crs=msh_t.crs
-                    )
-                original_mesh_gdf.to_file("full_mesh_with_super_triangle.gpkg")
-                # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
-                # plt.title("this is contrained mesh")
-                # plt.show(block=False)
-                # breakpoint()
-                raise
-                return vertices, elements, crs
+            # Map old indices to new index
+            for old_idx in group:
+                old_to_new_index[old_idx] = i
 
-            def get_centroid_based_elements():
+        new_coords = np.array(new_coords_list)
 
-                def get_area_limited_vertices_elements():
-                    vertices, all_elements, crs = get_vertices_and_unfiltered_elements()
-                    # print("Eliminate constrained elements with area less than 1 square meter", flush=True)
-                    # nprocs = cpu_count()
-                    # chunksize = len(vertices) // nprocs
-                    # with Pool(nprocs) as pool:
-                    #     original_mesh_gdf = gpd.GeoDataFrame(
-                    #         geometry=list(pool.map(
-                    #             Polygon,
-                    #             vertices[all_elements, :].tolist(),
-                    #             chunksize
-                    #             )),
-                    #         crs=crs
-                    #     )
-                    # original_mesh_gdf = original_mesh_gdf[original_mesh_gdf.to_crs("epsg:6933").geometry.area >= 1.]
-                    # # original_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(original_mesh_gdf)
-                    # vertices, all_elements = poly_gdf_to_elements(original_mesh_gdf)
-                    vertices = np.array(vertices)
-                    all_elements = np.array(all_elements)
-                    return vertices, all_elements, crs
+        # Update triangle connectivity
+        new_triangles = np.array([[old_to_new_index[idx] for idx in tri] for tri in triangles])
+
+        # Remove degenerate triangles (triangles with repeated vertices)
+        valid_triangles = []
+        for tri in new_triangles:
+            if len(set(tri)) == 3:  # Only keep triangles with three unique vertices
+                valid_triangles.append(tri)
+
+        new_triangles = np.array(valid_triangles)
+
+        transformer = Transformer.from_crs("epsg:6933", crs, always_xy=True)
+        new_coords = np.array(transformer.transform(new_coords[:, 0], new_coords[:, 1])).T
+        return new_coords, new_triangles
 
 
-                def get_centroid_based_element_mask():
-                    print("get original_geom_msh_t", flush=True)
-                    original_geom_msh_t = utils.get_geom_msh_t_from_msh_t_as_msh_t(msh_t)
-                    print("get quads_bnd_as_msh_t", flush=True)
-                    quads_bnd_as_msh_t = utils.multipolygon_to_jigsaw_msh_t(self.quads_poly_gdf_uu)
-                    print("take the mean", flush=True)
-                    centroids = np.mean(vertices[all_elements, :], axis=1)
-                    print("inpoly2-1 now", flush=True)
-                    centroid_in_base_poly = np.array(inpoly2(centroids, original_geom_msh_t.vert2['coord'], original_geom_msh_t.edge2['index'])[0], dtype=bool)
-                    print("inpoly2-2 now", flush=True)
-                    centroid_in_quads_poly = np.array(inpoly2(centroids, quads_bnd_as_msh_t.vert2['coord'], quads_bnd_as_msh_t.edge2['index'])[0], dtype=bool)
-                    return np.logical_or(centroid_in_base_poly, centroid_in_quads_poly)
 
 
-                # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
-                # plt.show(block=False)
-                # breakpoint()
-                # raise
-                # def get_pinched_node_vertex_indices(elements_to_consider):
-                #     tri = Triangulation(vertices[:, 0], vertices[:, 1], elements_to_consider)
-                #     boundary_edges = tri.neighbors == -1
-                #     boundary_vertices = tri.triangles[boundary_edges]
-                #     boundary_vertices_flat = boundary_vertices.flatten()
-                #     unique, inverse, counts = np.unique(boundary_vertices_flat, return_inverse=True, return_counts=True)
-                #     pinched_node_mask = unique[counts > 1]
-                #     return pinched_node_mask
-
-                def get_element_indices_with_pinched_nodes(elements_to_consider):
-                    print("get element indices with pinched nodes", flush=True)
-                    tri = Triangulation(vertices[:, 0], vertices[:, 1], elements_to_consider)
-                    boundary_edges = tri.neighbors == -1
-                    boundary_vertices = tri.triangles[boundary_edges]
-                    boundary_vertices_flat = boundary_vertices.flatten()
-                    unique, counts = np.unique(boundary_vertices_flat, return_counts=True)
-                    pinched_nodes = unique[counts > 1]
-                    vertex_to_elements = {}
-                    for idx, element in enumerate(tri.triangles):
-                        for vertex in element:
-                            if vertex in vertex_to_elements:
-                                vertex_to_elements[vertex].add(idx)
-                            else:
-                                vertex_to_elements[vertex] = {idx}
-                    elements_with_pinched_nodes = set()
-                    for node in pinched_nodes:
-                        elements_with_pinched_nodes.update(vertex_to_elements[node])
-                    return list(elements_with_pinched_nodes)
-
-                def separate_elements_by_pinched_nodes(target_elements, pinched_element_indices):
-                    print("separate elements by pinched nodes", flush=True)
-
-                    # Use np.take to select elements with pinched nodes
-                    elements_with_pinched_nodes = np.take(target_elements, pinched_element_indices, axis=0)
-
-                    # For elements without pinched nodes, use a boolean mask
-                    mask = np.ones(len(target_elements), dtype=bool)
-                    mask[pinched_element_indices] = False
-                    elements_without_pinched_nodes = target_elements[mask]
-
-                    return elements_with_pinched_nodes, elements_without_pinched_nodes
-
-                # def separate_elements_by_pinched_nodes(target_elements, pinched_element_indices):
-                #     print("separate elements by pinched nodes")
-                #     elements_with_pinched_nodes = []
-                #     elements_without_pinched_nodes = []
-                #     for idx, element in enumerate(target_elements):
-                #         if idx in pinched_element_indices:
-                #             elements_with_pinched_nodes.append(element)
-                #         else:
-                #             elements_without_pinched_nodes.append(element)
-
-                #     return elements_with_pinched_nodes, elements_without_pinched_nodes
-
-                vertices, all_elements, crs = get_area_limited_vertices_elements()
-                centroid_based_element_mask = get_centroid_based_element_mask()
-                target_elements = all_elements[centroid_based_element_mask, :]
-                pinched_element_indices = get_element_indices_with_pinched_nodes(target_elements)
-                while len(pinched_element_indices) > 0:
-                    _elements_with_pinched_nodes, target_elements = separate_elements_by_pinched_nodes(target_elements, pinched_element_indices)
-                    pinched_element_indices = get_element_indices_with_pinched_nodes(target_elements)
-                    print(f"{len(pinched_element_indices)} pinched nodes remaining", flush=True)
-
-                # results = []
-                # neighbors_table = Triangulation(vertices[:, 0], vertices[:, 1], target_elements).neighbors
-                # for i, triangle in enumerate(target_elements):
-                #     for j, neighbor_index in enumerate(neighbors_table[i]):
-                #         if neighbor_index != -1:
-                #             shared_edge = set(triangle) - set(target_elements[neighbor_index])
-                #             if len(shared_edge) == 2:
-                #                 if tuple(shared_edge) in zip(target_elements[neighbor_index], np.roll(target_elements[neighbor_index], -1)):
-                #                     results.append(f"Element {i} and {neighbor_index} have opposite orientation on edge {shared_edge}")
-                # if len(results) > 0:
-                #     for result in results:
-                #         print(result, flush=True)
-                #     raise NotImplementedError("Non-conforming elements were found")
-
-
-                print("done with vertices/element creation", flush=True)
-                return vertices, target_elements, crs
-            # target_elements = all_elements[get_final_element_mask(), :]
-            print("begin getting centroid based elements", flush=True)
-            vertices, elements, crs = get_centroid_based_elements()
-
-            # def orient_ccw(indices):
-            #     # Get the actual coordinates
-            #     points = vertices[indices]
-
-            #     # Calculate the cross product of vectors (p2 - p1) and (p3 - p1)
-            #     v1 = points[1] - points[0]
-            #     v2 = points[2] - points[0]
-            #     cross_product = np.cross(v1, v2)
-
-            #     # If cross product is negative, reverse the order of points
-            #     if cross_product < 0:
-            #         return indices[::-1]
-            #     return indices
-
-
-#             vertices = np.array(Transformer.from_crs(crs, "epsg:6933", always_xy=True).transform(*vertices.T)).T
-#             threshold = 3.
-#             distances, indices = KDTree(vertices).query(vertices, k=2)
-#             distances = distances[:, 1]
-#             indices = indices[:, 1]
-#             while distances.min() < threshold:
-#                 print("doing iter")
-#                 _idxs = np.where(distances <= threshold)[0]
-#                 node_indices = np.arange(vertices.shape[0])[_idxs]
-#                 close_pairs = indices[_idxs]
-#                 mask = node_indices < close_pairs
-#                 node_indices = node_indices[mask]
-#                 close_pairs = close_pairs[mask]
-#                 mapping = np.arange(vertices.shape[0])
-#                 mapping[close_pairs] = node_indices
-#                 elements = mapping[elements]
-#                 is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 3, arr=elements, axis=1)
-#                 elements = elements[~is_collapsed]
-#                 elements = np.apply_along_axis(orient_ccw, axis=1, arr=elements)
-#                 vertices, elements = self._cleanup_isolates(vertices, elements)
-#                 distances, indices = KDTree(vertices).query(vertices, k=2)
-#                 distances = distances[:, 1]
-#                 indices = indices[:, 1]
-#                 print(distances.min())
-            # transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
-            # vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
-            # print("begin get_msh_t_vertices", flush=True)
-            # vertices = np.vstack([
-            #     vertices,
-            #     np.array(get_msh_t_vertices())
-            #     ])
-
-            # convert into the final_gdf and return
-            # vertices = np.array(Transformer.from_crs("epsg:6933", crs, always_xy=True).transform(*vertices.T)).T
-            return vertices, elements, crs
-            # nprocs = cpu_count()
-            # chunksize = len(vertices) // nprocs
-            # with Pool(nprocs) as pool:
-            #     print("make final gdf", flush=True)
-            #     final_gdf = gpd.GeoDataFrame(
-            #         geometry=list(pool.map(Polygon, vertices[elements, :].tolist(), chunksize)),
-            #         crs=crs,
-            #         )
-            # verify
-            # final_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
-            # plt.show(block=False)
-            # breakpoint()
-            # raise
-
-            # Debug: omit non-conforming filter
-            # return final_gdf
-
-            # print("begin filtering out non-conforming", flush=True)
-            # # final_gdf_buffered = final_gdf.copy()
-            # # final_gdf_buffered.geometry = final_gdf_buffered.geometry.map(lambda x: x.buffer(np.finfo(np.float32).eps))
-            # joined = gpd.sjoin(
-            #         final_gdf,
-            #         final_gdf,
-            #         how='inner',
-            #         predicate='intersects'
-            #         )
-            # joined = joined[joined.index != joined.index_right]
-            # # del final_gdf_buffered
-
-            # def get_elements_are_conforming_parallel_job_args():
-            #     exterior_coords_left = final_gdf.loc[joined.index].geometry.apply(lambda g: g.exterior.coords).tolist()
-            #     exterior_coords_right = final_gdf.loc[joined.index_right].geometry.apply(lambda g: g.exterior.coords).tolist()
-            #     return zip(exterior_coords_left, exterior_coords_right)
-
-            # with Pool(cpu_count()) as pool:
-            #     print("check conformity", flush=True)
-            #     is_conforming_bool_list = pool.starmap(
-            #             self._elements_are_conforming_wrapper,
-            #             get_elements_are_conforming_parallel_job_args()
-            #             )
-            # joined = joined[~np.array(is_conforming_bool_list)]
-            # return final_gdf.drop(index=joined.index.unique())
-
-        def get_final_mesh_gdf():
-            print("begin generating conforming tri_mesh_gdf", flush=True)
-            tri_mesh_gdf = get_conforming_tri_mesh_gdf()
-            return tri_mesh_gdf
-            print("begin replacing trias with quads", flush=True)
-            joined = gpd.sjoin(
-                    gpd.GeoDataFrame(geometry=tri_mesh_gdf.to_crs("epsg:6933").geometry.centroid, crs="epsg:6933"),
-                    self.quads_poly_gdf.to_crs("epsg:6933"),
-                    how='left',
-                    predicate='within',
-                    )
-            joined = joined.to_crs(tri_mesh_gdf.crs)
-            joined.geometry = tri_mesh_gdf.geometry
-            grouped = joined.groupby('index_right')
-            filtered_groups = {idx: group for idx, group in grouped if len(group) == 2}
-            with Pool(cpu_count()) as pool:
-                grouped = gpd.GeoDataFrame(
-                        geometry=list(pool.map(
-                            ops.unary_union,
-                            [group.geometry for group in filtered_groups.values()],
-                            len(filtered_groups) // cpu_count(),
-                            )),
-                        crs=tri_mesh_gdf.crs
-                        )
-            # grouped.geometry = grouped.geometry.map(lambda x: polygon.orient(x, sign=1.))
-            # Collect indices of geometries in tri_mesh_gdf to be dropped
-            indices_to_drop = [idx for group in filtered_groups.values() for idx in group.index]
-
-            # Drop these indices from tri_mesh_gdf
-            tri_mesh_gdf.drop(index=list(set(indices_to_drop)), inplace=True)
-            # tri_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
-            # grouped.plot(ax=plt.gca(), facecolor='r', edgecolor='r', alpha=0.3, linewidth=0.3)
-            # plt.show(block=False)
-            # breakpoint()
-            # raise
-            final_mesh_gdf = pd.concat([tri_mesh_gdf, grouped], ignore_index=True)
-            final_mesh_gdf.geometry = final_mesh_gdf.geometry.map(lambda x: polygon.orient(x, sign=1.))
-            return final_mesh_gdf
-            breakpoint()
-            # final_mesh_gdf = pd.c
-            # breakpoint()
-
-            # print("gener:ate final_mesh_gdf (the hybrid one)", flush=True)
-            # final_mesh_gdf = pd.concat([tri_mesh_gdf, self.quads_poly_gdf.loc[joined[~joined.index_right.isna()].index_right.unique()].to_crs(tri_mesh_gdf.crs)], ignore_index=True)
-            # final_mesh_gdf = final_mesh_gdf[final_mesh_gdf.to_crs("epsg:6933").geometry.area >= 1.]
-            # breakpoint()
-            # def is_conforming(row):
-            #     ls_right = LinearRing(final_mesh_gdf.loc[row.index_right].geometry.exterior.coords)
-            #     return elements_are_conforming(row.geometry, ls_right)
-
-            # joined = gpd.sjoin(
-            #         final_mesh_gdf,
-            #         final_mesh_gdf,
-            #         how='inner',
-            #         predicate='intersects'
-            #         )
-            # joined = joined[joined.index != joined.index]
-            # joined = joined[joined.apply(is_conforming, axis=1)]
-            # verification
-            # final_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
-            # plt.show(block=False)
-            # breakpoint()
-            return final_mesh_gdf
-
-        def get_output_msh_t():
-
-            print("begin generating final_mesh_gdf", flush=True)
-            # final_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(get_final_mesh_gdf())
-            # final_mesh_gdf = get_final_mesh_gdf()
-            # final_mesh_gdf = get_conforming_tri_mesh_gdf()
-
-            # final_mesh_gdf.to_feather("final_mesh_gdf_unfiltered_for_debug.feather")
-            # raise
-            # final_mesh_gdf.to_feather("final_mesh_gdf_unfiltered_for_debug.feather")
-            # final_mesh_gdf = gpd.read_feather()
-
-            # final_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(final_mesh_gdf)
-            # final_mesh_gdf = self._fix_triangles_outside_SCHISM_skewness_tolerance(final_mesh_gdf)
-            # verification
-            # final_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
-            # final_mesh_gdf.to_feather("finalized_mesh.feather")
-            # plt.show(block=False)
-            # breakpoint()
-            # print("begin convering final_mesh_gdf to msh_t", flush=True)
-            vertices, elements, crs = get_conforming_tri_mesh_gdf()
-            # output_msh_t = self.jigsaw_msh_t_from_nodes_elements(*poly_gdf_to_elements(final_mesh_gdf), crs=final_mesh_gdf.crs)
-            output_msh_t = self.jigsaw_msh_t_from_nodes_elements(vertices, elements, crs=crs)
-
-            # del final_mesh_gdf
-            print("cleanup pinched nodes", flush=True)
-            utils.cleanup_pinched_nodes_iter(output_msh_t)
-
-            # import pickle
-            # with open("final_output_msh_t_with_skew_elements.pkl", "wb") as file:
-            #     pickle.dump(output_msh_t, file)
-
-            # raise
-
-#             utils.ensure_ccw_triangles(output_msh_t)
-            self._fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(output_msh_t)
-            # print("split bad quality quads", flush=True)
-            # utils.split_bad_quality_quads(output_msh_t)
-            # print("swap large angle edges", flush=True)
-            # utils.swap_large_angle_edges(output_msh_t, 175.)
-            return output_msh_t
+    def _get_new_msh_t_from_cdt(self, base_msh_t):
         print("begin generating output_msh_t", flush=True)
-        return get_output_msh_t()
+        vertices, elements, crs = self.get_centroid_based_elements(base_msh_t)
+        vertices, elements = self.snap_nodes(vertices, elements, crs)
+        output_msh_t = self.jigsaw_msh_t_from_nodes_elements(vertices, elements, crs=crs)
+        print("cleanup pinched nodes", flush=True)
+        utils.cleanup_pinched_nodes_iter(output_msh_t)
+        # import pickle
+        # with open("final_output_msh_t_with_skew_elements.pkl", "wb") as file:
+        #     pickle.dump(output_msh_t, file)
+        # raise
+        # utils.ensure_ccw_triangles(output_msh_t)
+        # self._fix_triangles_outside_SCHISM_skewness_tolerance_mut_msh_t(output_msh_t)
+        # print("split bad quality quads", flush=True)
+        # utils.split_bad_quality_quads(output_msh_t)
+        # print("swap large angle edges", flush=True)
+        # utils.swap_large_angle_edges(output_msh_t, 175.)
+        return output_msh_t
+
+
+
+    def get_vertices_and_unfiltered_elements(self, base_msh_t):
+        t, crs = self.get_constrained_triangulation(base_msh_t)
+
+        # the constrained triangulation has all the triangles we need, plus many others that we
+        # need to filter out. Normally, one would use erase_outer_triangles_and_holes() but in
+        # our tests, we see that it leads to significant over-filtering.
+        # Here we implement a custom filter for cdt.Triangulation.
+        print("erase super triangle", flush=True)
+        # Begin by erasing the super triangle, since we definitely don't need that one.
+        # t.erase_super_triangle()
+        # t.erase_outer_triangles_and_holes()
+        # t.erase_outer_triangles()      # we assume operations over members of t are not safe, so we extract the remainin
+        # outputs into numpy arrays.
+        print("get constrained triangulation vertices", flush=True)
+        vertices = np.array([(v.x, v.y) for v in t.vertices])
+        print("get constrained triangulation elements", flush=True)
+        elements = np.array([tria.vertices for tria in t.triangles])
+        # original_mesh_gdf = gpd.GeoDataFrame(geometry=list(map(Polygon, vertices[elements, :])), crs=base_msh_t.crs)
+        # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+        # plt.title("this is contrained mesh")
+        # plt.show(block=False)
+        # breakpoint()
+        return vertices, elements, crs
+
+    def get_centroid_based_element_mask(self, base_msh_t, vertices, all_elements):
+        print("get original_geom_msh_t", flush=True)
+        original_geom_msh_t = utils.get_geom_msh_t_from_msh_t_as_msh_t(base_msh_t)
+        print("get quads_bnd_as_msh_t", flush=True)
+        quads_bnd_as_msh_t = utils.multipolygon_to_jigsaw_msh_t(self.quads_poly_gdf_uu)
+        print("take the mean", flush=True)
+        centroids = np.mean(vertices[all_elements, :], axis=1)
+        print("inpoly2-1 now", flush=True)
+        centroid_in_base_poly = np.array(inpoly2(centroids, original_geom_msh_t.vert2['coord'], original_geom_msh_t.edge2['index'])[0], dtype=bool)
+        print("inpoly2-2 now", flush=True)
+        centroid_in_quads_poly = np.array(inpoly2(centroids, quads_bnd_as_msh_t.vert2['coord'], quads_bnd_as_msh_t.edge2['index'])[0], dtype=bool)
+        return np.logical_or(centroid_in_base_poly, centroid_in_quads_poly)
+
+
+    # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+    # plt.show(block=False)
+    # breakpoint()
+    # raise
+    # def get_pinched_node_vertex_indices(elements_to_consider):
+    #     tri = Triangulation(vertices[:, 0], vertices[:, 1], elements_to_consider)
+    #     boundary_edges = tri.neighbors == -1
+    #     boundary_vertices = tri.triangles[boundary_edges]
+    #     boundary_vertices_flat = boundary_vertices.flatten()
+    #     unique, inverse, counts = np.unique(boundary_vertices_flat, return_inverse=True, return_counts=True)
+    #     pinched_node_mask = unique[counts > 1]
+    #     return pinched_node_mask
+
+    def get_element_indices_with_pinched_nodes(self, vertices, elements_to_consider):
+        print("get element indices with pinched nodes", flush=True)
+        tri = Triangulation(vertices[:, 0], vertices[:, 1], elements_to_consider)
+        boundary_edges = tri.neighbors == -1
+        boundary_vertices = tri.triangles[boundary_edges]
+        boundary_vertices_flat = boundary_vertices.flatten()
+        unique, counts = np.unique(boundary_vertices_flat, return_counts=True)
+        pinched_nodes = unique[counts > 1]
+        vertex_to_elements = {}
+        for idx, element in enumerate(tri.triangles):
+            for vertex in element:
+                if vertex in vertex_to_elements:
+                    vertex_to_elements[vertex].add(idx)
+                else:
+                    vertex_to_elements[vertex] = {idx}
+        elements_with_pinched_nodes = set()
+        for node in pinched_nodes:
+            elements_with_pinched_nodes.update(vertex_to_elements[node])
+        return list(elements_with_pinched_nodes)
+
+    def separate_elements_by_pinched_nodes(self, target_elements, pinched_element_indices):
+        print("separate elements by pinched nodes", flush=True)
+        # Use np.take to select elements with pinched nodes
+        elements_with_pinched_nodes = np.take(target_elements, pinched_element_indices, axis=0)
+        # For elements without pinched nodes, use a boolean mask
+        mask = np.ones(len(target_elements), dtype=bool)
+        mask[pinched_element_indices] = False
+        elements_without_pinched_nodes = target_elements[mask]
+        return elements_with_pinched_nodes, elements_without_pinched_nodes
+
+    def get_centroid_based_elements(self, base_msh_t):
+        vertices, all_elements, crs = self.get_vertices_and_unfiltered_elements(base_msh_t)
+        centroid_based_element_mask = self.get_centroid_based_element_mask(base_msh_t, vertices, all_elements)
+        target_elements = all_elements[centroid_based_element_mask, :]
+
+        # nprocs = cpu_count()
+        # chunks = np.array_split(vertices[target_elements, :], nprocs)
+        # with Pool(nprocs) as pool:
+        #     original_mesh_gdf = gpd.GeoDataFrame(
+        #             geometry=[item for sublist in pool.map(Polygon, chunks) for item in sublist],
+        #             crs=crs
+        #             )
+        # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+        # plt.title("this is contrained mesh")
+        # plt.show(block=False)
+        # breakpoint()
+
+        pinched_element_indices = self.get_element_indices_with_pinched_nodes(vertices, target_elements)
+        while len(pinched_element_indices) > 0:
+            _elements_with_pinched_nodes, target_elements = self.separate_elements_by_pinched_nodes(target_elements, pinched_element_indices)
+            pinched_element_indices = self.get_element_indices_with_pinched_nodes(vertices, target_elements)
+            print(f"{len(pinched_element_indices)} pinched nodes remaining", flush=True)
+        # original_mesh_gdf = gpd.GeoDataFrame(
+        #         geometry=list(map(Polygon, vertices[target_elements, :])),
+        #         crs=crs
+        #         )
+        # nprocs = cpu_count()
+        # chunks = np.array_split(vertices[target_elements, :], nprocs)
+        # with Pool(nprocs) as pool:
+        #     original_mesh_gdf = gpd.GeoDataFrame(
+        #             geometry=[item for sublist in pool.map(Polygon, chunks) for item in sublist],
+        #             crs=crs
+        #             )
+        # original_mesh_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+        # plt.triplot(vertices[:, 0], vertices[:, 1], target_elements)
+        # plt.title("this is contrained mesh")
+        # plt.show(block=False)
+        # breakpoint()
+        # results = []
+        # neighbors_table = Triangulation(vertices[:, 0], vertices[:, 1], target_elements).neighbors
+        # for i, triangle in enumerate(target_elements):
+        #     for j, neighbor_index in enumerate(neighbors_table[i]):
+        #         if neighbor_index != -1:
+        #             shared_edge = set(triangle) - set(target_elements[neighbor_index])
+        #             if len(shared_edge) == 2:
+        #                 if tuple(shared_edge) in zip(target_elements[neighbor_index], np.roll(target_elements[neighbor_index], -1)):
+        #                     results.append(f"Element {i} and {neighbor_index} have opposite orientation on edge {shared_edge}")
+        # if len(results) > 0:
+        #     for result in results:
+        #         print(result, flush=True)
+        #     raise NotImplementedError("Non-conforming elements were found")
+        print("done with vertices/element creation", flush=True)
+        return vertices, target_elements, crs
+
+    # def get_conforming_tri_mesh_gdf(self):
+    #     # target_elements = all_elements[get_final_element_mask(), :]
+    #     print("begin getting centroid based elements", flush=True)
+    #     vertices, elements, crs = self.get_centroid_based_elements()
+
+
+# #             vertices = np.array(Transformer.from_crs(crs, "epsg:6933", always_xy=True).transform(*vertices.T)).T
+# #             threshold = 3.
+# #             distances, indices = KDTree(vertices).query(vertices, k=2)
+# #             distances = distances[:, 1]
+# #             indices = indices[:, 1]
+# #             while distances.min() < threshold:
+# #                 print("doing iter")
+# #                 _idxs = np.where(distances <= threshold)[0]
+# #                 node_indices = np.arange(vertices.shape[0])[_idxs]
+# #                 close_pairs = indices[_idxs]
+# #                 mask = node_indices < close_pairs
+# #                 node_indices = node_indices[mask]
+# #                 close_pairs = close_pairs[mask]
+# #                 mapping = np.arange(vertices.shape[0])
+# #                 mapping[close_pairs] = node_indices
+# #                 elements = mapping[elements]
+# #                 is_collapsed = np.apply_along_axis(lambda x: len(np.unique(x)) != 3, arr=elements, axis=1)
+# #                 elements = elements[~is_collapsed]
+# #                 elements = np.apply_along_axis(orient_ccw, axis=1, arr=elements)
+# #                 vertices, elements = self._cleanup_isolates(vertices, elements)
+# #                 distances, indices = KDTree(vertices).query(vertices, k=2)
+# #                 distances = distances[:, 1]
+# #                 indices = indices[:, 1]
+# #                 print(distances.min())
+    #     # transformer = Transformer.from_crs("EPSG:6933", msh_t.crs, always_xy=True)
+    #     # vertices = np.array(transformer.transform(vertices[:, 0], vertices[:, 1])).T
+    #     # print("begin get_msh_t_vertices", flush=True)
+    #     # vertices = np.vstack([
+    #     #     vertices,
+    #     #     np.array(get_msh_t_vertices())
+    #     #     ])
+
+    #     # convert into the final_gdf and return
+    #     # vertices = np.array(Transformer.from_crs("epsg:6933", crs, always_xy=True).transform(*vertices.T)).T
+    #     return vertices, elements, crs
+    #     # nprocs = cpu_count()
+    #     # chunksize = len(vertices) // nprocs
+    #     # with Pool(nprocs) as pool:
+    #     #     print("make final gdf", flush=True)
+    #     #     final_gdf = gpd.GeoDataFrame(
+    #     #         geometry=list(pool.map(Polygon, vertices[elements, :].tolist(), chunksize)),
+    #     #         crs=crs,
+    #     #         )
+    #     # verify
+    #     # final_gdf.plot(ax=plt.gca(), facecolor='lightgrey', edgecolor='k', alpha=0.3, linewidth=0.3)
+    #     # plt.show(block=False)
+    #     # breakpoint()
+    #     # raise
+
+    #     # Debug: omit non-conforming filter
+    #     # return final_gdf
+
+    #     # print("begin filtering out non-conforming", flush=True)
+    #     # # final_gdf_buffered = final_gdf.copy()
+    #     # # final_gdf_buffered.geometry = final_gdf_buffered.geometry.map(lambda x: x.buffer(np.finfo(np.float32).eps))
+    #     # joined = gpd.sjoin(
+    #     #         final_gdf,
+    #     #         final_gdf,
+    #     #         how='inner',
+    #     #         predicate='intersects'
+    #     #         )
+    #     # joined = joined[joined.index != joined.index_right]
+    #     # # del final_gdf_buffered
+
+    #     # def get_elements_are_conforming_parallel_job_args():
+    #     #     exterior_coords_left = final_gdf.loc[joined.index].geometry.apply(lambda g: g.exterior.coords).tolist()
+    #     #     exterior_coords_right = final_gdf.loc[joined.index_right].geometry.apply(lambda g: g.exterior.coords).tolist()
+    #     #     return zip(exterior_coords_left, exterior_coords_right)
+
+    #     # with Pool(cpu_count()) as pool:
+    #     #     print("check conformity", flush=True)
+    #     #     is_conforming_bool_list = pool.starmap(
+    #     #             self._elements_are_conforming_wrapper,
+    #     #             get_elements_are_conforming_parallel_job_args()
+    #     #             )
+    #     # joined = joined[~np.array(is_conforming_bool_list)]
+    #     # return final_gdf.drop(index=joined.index.unique())
+
 
     @staticmethod
     def _compute_skewness(output_msh_t):

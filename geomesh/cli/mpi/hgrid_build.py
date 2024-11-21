@@ -231,6 +231,24 @@ class HgridConfig(BaseModel):
     def try_from_dict(cls, data: dict) -> "HgridConfig":
         return cls(**data['hgrid'])
 
+    def iter_interpolate_raster_to_msh_t_job_args(self, raster_requests, raster_window_bboxes, output_msh_t):
+        for k, ((i, raster_path, raster_request_opts, interpolate_kwargs), (j, window)) in raster_requests:
+            raster_request_opts = raster_request_opts.copy()
+            raster_request_opts["raster_path"] = raster_path
+            # raster_request_opts.pop("bbox")
+            # raster = get_raster_from_opts(raster_path=raster_path, **raster_request_opts)
+            # xi = raster.x
+            # yi = raster.y
+            # (xi, yi, _), crs = self._get_window_data_from_raster(raster_path=raster_path, window=window, **raster_request_opts)
+            bbox = raster_window_bboxes[k]
+            vert2_idxs = np.where(
+                np.logical_and(
+                    np.logical_and(bbox.xmin <= output_msh_t.vert2["coord"][:, 0], bbox.xmax >= output_msh_t.vert2["coord"][:, 0]),
+                    np.logical_and(bbox.ymin <= output_msh_t.vert2["coord"][:, 1], bbox.ymax >= output_msh_t.vert2["coord"][:, 1]),
+                )
+            )[0]
+            msh_t_coords = output_msh_t.vert2["coord"][vert2_idxs, :]
+            yield msh_t_coords, output_msh_t.crs, raster_request_opts, interpolate_kwargs, vert2_idxs
 
     def _build_output_mesh_mpi(self, comm, output_rank=None, cache_directory=None):
         root_rank = 0 if output_rank is None else output_rank
@@ -253,33 +271,11 @@ class HgridConfig(BaseModel):
                 for k, ((i, raster_path, raster_request_opts, interpolate_kwargs), (j, window)) in raster_requests:
                     job_args.append((raster_path, raster_request_opts, output_msh_t.crs))
                 raster_window_bboxes = list(executor.starmap(self._get_raster_window_bbox, job_args))
-
-        def iter_interpolate_raster_to_msh_t_job_args():
-            for k, ((i, raster_path, raster_request_opts, interpolate_kwargs), (j, window)) in raster_requests:
-                raster_request_opts = raster_request_opts.copy()
-                raster_request_opts["raster_path"] = raster_path
-                # raster_request_opts.pop("bbox")
-                # raster = get_raster_from_opts(raster_path=raster_path, **raster_request_opts)
-                # xi = raster.x
-                # yi = raster.y
-                # (xi, yi, _), crs = self._get_window_data_from_raster(raster_path=raster_path, window=window, **raster_request_opts)
-                bbox = raster_window_bboxes[k]
-                vert2_idxs = np.where(
-                    np.logical_and(
-                        np.logical_and(bbox.xmin <= output_msh_t.vert2["coord"][:, 0], bbox.xmax >= output_msh_t.vert2["coord"][:, 0]),
-                        np.logical_and(bbox.ymin <= output_msh_t.vert2["coord"][:, 1], bbox.ymax >= output_msh_t.vert2["coord"][:, 1]),
-                    )
-                )[0]
-                msh_t_coords = output_msh_t.vert2["coord"][vert2_idxs, :]
-                yield msh_t_coords, output_msh_t.crs, raster_request_opts, interpolate_kwargs, vert2_idxs
-
-        with MPICommExecutor(comm, root=root_rank) as executor:
-            if executor is not None:
                 logger.debug("Begin interpolate_raster_to_msh_t()")
                 results = list(executor.starmap(
                             self._interpolate_raster_to_msh_t,
                             # [(*args, cache_directory) for args in self.iter_normalized_raster_window_requests()],
-                            iter_interpolate_raster_to_msh_t_job_args(),
+                            self.iter_interpolate_raster_to_msh_t_job_args(raster_requests, raster_window_bboxes, output_msh_t),
                             ))
                 output_msh_t.value = np.full(
                         (output_msh_t.vert2["coord"].shape[0], 1),
@@ -289,7 +285,7 @@ class HgridConfig(BaseModel):
                 for idxs, values in results:
                     output_msh_t.value[idxs, 0] = values
 
-
+                output_msh_t.value[np.where(output_msh_t.value == -9999.)] = np.nan
 
                 if np.any(np.isnan(output_msh_t.value)):
                     value = output_msh_t.value.flatten()
@@ -303,7 +299,6 @@ class HgridConfig(BaseModel):
                             )
                     output_msh_t.value = value.reshape((value.size, 1)).astype(jigsaw_msh_t.REALS_t)
                     del value
-
 
                 # verify:
                 # from geomesh import utils
