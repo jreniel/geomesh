@@ -179,11 +179,11 @@ class RasterGeom(BaseGeom):
         for polygon in multipolygon.geoms:
             if np.all(np.asarray(polygon.exterior.coords).flatten() == float('inf')):
                 raise NotImplementedError("ellipsoidal-mesh")
-            
+
             # add exterior vertices and edges
             for x, y in polygon.exterior.coords[:-1]:
                 vert2.append(((x, y), 0))
-            
+
             _edge2 = list()
             for i in range(len(polygon.exterior.coords)-2):
                 _edge2.append((i, i+1))
@@ -199,7 +199,7 @@ class RasterGeom(BaseGeom):
                     for poly in hole['geometry'].geoms:
                         for x, y in poly.exterior.coords[:-1]:
                             vert2.append(((x, y), -1))
-                        
+
                         _edge2 = list()
                         for i in range(len(poly.exterior.coords)-2):
                             _edge2.append((i, i+1))
@@ -208,7 +208,7 @@ class RasterGeom(BaseGeom):
                 else:  # if it's a single Polygon
                     for x, y in hole['geometry'].exterior.coords[:-1]:
                         vert2.append(((x, y), -1))
-                    
+
                     _edge2 = list()
                     for i in range(len(hole['geometry'].exterior.coords)-2):
                         _edge2.append((i, i+1))
@@ -500,20 +500,56 @@ class RasterGeom(BaseGeom):
     def resample_multipolygon(mp, segment_length):
         return quadgen.resample_multipolygon(mp, segment_length)
 
+def get_multipolygon_from_axes(contour_set):
+    """
+    Convert a matplotlib contour set to a MultiPolygon.
 
-def get_multipolygon_from_axes(ax):
-    from time import time
+    Parameters:
+    -----------
+    contour_set : matplotlib.contour.QuadContourSet
+        The contour set object returned from plt.contour()
 
-    start = time()
+    Returns:
+    --------
+    shapely.geometry.MultiPolygon
+        A valid multipolygon containing all contours
+    """
+    from matplotlib.path import Path
+    import numpy as np
+
     logger.debug("start get mp from axes")
-    # extract linear_rings from plot
     linear_ring_collection = list()
-    for path_collection in ax.collections:
-        for path in path_collection.get_paths():
-            polygons = path.to_polygons(closed_only=True)
+
+    # Get paths from the contour set
+    for joined_paths in contour_set.get_paths():
+        # Separate the joined paths into individual contours
+        path_vertices = []
+        path_codes = []
+
+        for verts, code in joined_paths.iter_segments():
+            if code == Path.MOVETO:
+                if path_vertices:
+                    # Process completed path
+                    polygons = Path(np.array(path_vertices),
+                                  np.array(path_codes)).to_polygons(closed_only=True)
+                    for linear_ring in polygons:
+                        if linear_ring.shape[0] > 3:
+                            linear_ring_collection.append(LinearRing(linear_ring))
+                path_vertices = [verts]
+                path_codes = [code]
+            elif code in (Path.LINETO, Path.CLOSEPOLY):
+                path_vertices.append(verts)
+                path_codes.append(code)
+
+        # Process the last path
+        if path_vertices:
+            polygons = Path(np.array(path_vertices),
+                          np.array(path_codes)).to_polygons(closed_only=True)
             for linear_ring in polygons:
                 if linear_ring.shape[0] > 3:
                     linear_ring_collection.append(LinearRing(linear_ring))
+
+    # Process the collected linear rings into a MultiPolygon
     if len(linear_ring_collection) > 1:
         # reorder linear rings from above
         areas = [Polygon(linear_ring).area for linear_ring in linear_ring_collection]
@@ -524,6 +560,7 @@ def get_multipolygon_from_axes(ax):
         areas.pop(idx)
         test_points.pop(idx)
         path = Path(np.array(outer_ring.coords), closed=True)
+
         while len(linear_ring_collection) > 0:
             contained_paths = np.where(path.contains_points(np.array(test_points)))[0]
             inner_rings = list()
@@ -532,22 +569,23 @@ def get_multipolygon_from_axes(ax):
                 areas.pop(idx)
                 test_points.pop(idx)
             polygon_collection.append(Polygon(outer_ring, inner_rings))
+
             if len(linear_ring_collection) > 0:
                 idx = np.where(areas == np.max(areas))[0][0]
                 outer_ring = linear_ring_collection.pop(idx)
                 areas.pop(idx)
                 test_points.pop(idx)
                 path = Path(np.array(outer_ring.coords), closed=True)
+
         multipolygon = MultiPolygon(polygon_collection)
 
     elif len(linear_ring_collection) == 1:
         multipolygon = MultiPolygon([Polygon(linear_ring_collection.pop())])
 
     else:
-        return MultiPolygon([Polygon(linear_ring_collection)])
-        # raise Exception(f'unhandled linear_ring_collection output: {linear_ring_collection}')
-    return make_multipolygon_valid(multipolygon)
+        return MultiPolygon([])
 
+    return make_multipolygon_valid(multipolygon)
 
 def interpolate_polygon(poly, distance):
     # This function interpolates the polygon and returns a new polygon.
@@ -604,7 +642,7 @@ def make_multipolygon_valid(multipolygon):
 
     if isinstance(multipolygon, Polygon):
         multipolygon = MultiPolygon([multipolygon])
-            
+
     return multipolygon
 
 
